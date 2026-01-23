@@ -20,6 +20,29 @@ pub fn bufferedPrint() !void {
     try stdout.flush(); // Don't forget to flush!
 }
 
+pub const BinaryFileKind = enum {
+    unknown,
+    elf,
+    macho,
+    pe,
+};
+pub const Endianess = enum {
+    little,
+    big,
+};
+
+const ElfHint = struct {
+    bitness: u8,
+    endianess: Endianess,
+};
+
+const Stage0ParseResult = union(BinaryFileKind) {
+    unknown,
+    elf: ElfHint,
+    macho: u8, // TBD MachoHint
+    pe: u8, // TBD PeHint
+};
+
 pub fn bufferedRead(path: []const u8, buffer: []u8, max_length: usize) !void {
     var file = try fs.cwd().openFile(path, .{ .mode = .read_only });
     defer file.close();
@@ -44,6 +67,6 @@ test "bufferedRead: base case 1 - read ascii text file, which is shorter than de
 test "bufferedRead: base case 2 - read ELF file" {
     var buf: [prefix_length]u8 = @splat(0);
     try bufferedRead("testing/assets/bian", buf[0..], prefix_length);
-    // std.debug.print("CWD: {s}\n", .{buf[0..3]});
+    try expect(0x7F == buf[0]);
     try expect(mem.eql(u8, "ELF", buf[1..4]));
 }

@@ -1,0 +1,9 @@
+[tools]
+zig = "0.15"
+watchexec = "2.3"
+
+[tasks.fmt]
+run = "zig fmt src"
+[tasks.watch]
+depends = ["fmt"]
+run = "watchexec zig build test"

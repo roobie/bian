@@ -1,6 +1,11 @@
-## High-Level Design: Cross-Platform Binary Inspector
+## Cross-Platform Binary Inspector
 
-Below is a high-level, text-only design for two major parts:
+Main goals:
+- Implement using `zig`
+- Be cross-platform
+- Be performant
+- Be idiomatic
+- Be useful
 
 1. A reusable code (library) module.
 2. A CLI/program module that uses the library.
@@ -13,7 +18,7 @@ Below is a high-level, text-only design for two major parts:
 
 Provide a single, cross-platform API to inspect binary executables and libraries, independent of CLI concerns. The module should:
 
-- Detect file format (ELF, Mach-O, PE, possibly “unknown”).
+- Detect file format (ELF, Mach-O, PE, APE, possibly “unknown”).
 - Extract structural info (architecture, endianness, bitness, sections, segments).
 - Extract metadata (build ID, entry point, PIE/ASLR flags, RELRO, NX, stripping status).
 - Extract dynamic info (imported libraries, exported symbols, dynamic relocations).

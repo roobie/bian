@@ -4,6 +4,6 @@ watchexec = "2.3"
 
 [tasks.fmt]
 run = "zig fmt src"
-[tasks.watch]
+[tasks.test]
 depends = ["fmt"]
-run = "watchexec zig build test"
+run = "zig build test"

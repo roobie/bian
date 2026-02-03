@@ -154,6 +154,13 @@ pub fn detectFormat(buffer: []u8) Stage0ParseResult {
     return Stage0ParseResult{ .unknown = undefined };
 }
 
+test "elf.amd64" {
+    var buf: [prefix_length]u8 = @splat(0);
+    try bufferedRead("testing/assets/bian", buf[0..], prefix_length);
+    const presult = detectFormat(buf[0..]);
+    try expect(presult.elf.bitness == 64);
+}
+
 test "macho.amd64" {
     var buf: [prefix_length]u8 = @splat(0);
     try bufferedRead("testing/assets/MachO-OSX-x64-ls", buf[0..], prefix_length);

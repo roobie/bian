@@ -5,7 +5,8 @@ const mem = std.mem;
 
 const expect = std.testing.expect;
 
-// const prefix_length = 64;
+/// We assume that we will fit all metadata required in this length, to
+/// successfully perform the stage 0 parsing.
 const prefix_length = 512;
 
 pub fn bufferedPrint() !void {
@@ -58,6 +59,104 @@ const Stage0ParseResult = union(BinaryFileKind) {
     macho: MachoHint,
     pe: PeHint,
     ape: u8, // TBD ApeHint
+};
+
+pub const OsAbi = enum {
+    unknown,
+    linux,
+    macos,
+    windows,
+};
+
+pub const CpuArch = enum {
+    unknown,
+    x86,
+    x86_64,
+    armv7,
+    aarch64,
+};
+
+pub const FileKind = enum {
+    unknown,
+    executable,
+    shared_library,
+    object,
+};
+
+pub const Perhaps = enum {
+    unknown,
+    yes,
+    no,
+};
+
+pub const RelroConfig = enum {
+    unknown,
+    none,
+    partial,
+    full,
+    not_applicable,
+};
+pub const StrippedState = enum {
+    unknown,
+    yes,
+    no,
+    partial,
+};
+
+const SectionKind = enum {
+    unknown,
+    code,
+    data,
+};
+const Section = struct {
+    name: []const u8,
+    kind: SectionKind,
+    size: u64,
+};
+const ExportKind = enum {
+    unknown,
+    function,
+    variable,
+};
+const Export = struct {
+    name: []const u8,
+    kind: ExportKind,
+};
+
+const Message = struct {
+    body: []const u8,
+    // level (Warning, Information, etc.)
+};
+
+/// Unified description structure
+const BinaryDescription = struct {
+    // stage0: Stage0ParseResult,
+
+    // === BASICS ===
+    format: BinaryFileKind,
+    os_abi: OsAbi,
+    arch: CpuArch,
+    bitness: u8,
+    endianess: Endian,
+    file_kind: FileKind,
+    entrypoint_virtual_address: u64,
+
+    // === SECURITY FEATURES ===
+    pie: Perhaps,
+    aslr: Perhaps,
+    nx: Perhaps,
+    relro: RelroConfig,
+    stripped: StrippedState,
+
+    // === STRUCTURAL ===
+    sections: []Section,
+    segments: []Section,
+    imports: [][]const u8,
+    exports: []Export,
+
+    messages: []Message,
+
+    debug_info_present: bool,
 };
 
 pub fn bufferedRead(path: []const u8, buffer: []u8, max_length: usize) !void {

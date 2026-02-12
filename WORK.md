@@ -3,7 +3,7 @@
 Make sure to reference [README.md](./README.md) and [NOTES.md](./NOTES.md) for an overview.
 This document is for tracking work, and is a living document to be kept updated.
 
-1. [DOING] Define the BinaryDescription Struct in src/root.zig:
+1. [DONE] Define the BinaryDescription Struct in src/root.zig:
 - Create a top-level struct that encapsulates all normalized data from a parsed binary.
 - Base it directly on the "Unified Binary Model" section in README.md and NOTES.md.
 - Key fields (prioritize core identity and security first, as they're simpler and central):

@@ -5,6 +5,14 @@ const mem = std.mem;
 
 const expect = std.testing.expect;
 
+pub const ParseError = error{
+    TooSmall,
+    InvalidHeader,
+    UnsupportedVariant,
+    Malformed,
+    OutOfMemory,
+};
+
 /// We assume that we will fit all metadata required in this length, to
 /// successfully perform the stage 0 parsing.
 const prefix_length = 512;
@@ -108,10 +116,14 @@ const SectionKind = enum {
     code,
     data,
 };
+const Permission = enum { read, write, execute, none };
+
 const Section = struct {
     name: []const u8,
     kind: SectionKind,
     size: u64,
+    file_offset: u64,
+    permission: Permission,
 };
 const ExportKind = enum {
     unknown,
@@ -282,4 +294,143 @@ test "pe.amd64" {
     // SizeOfOptionalHeader (2 bytes): Size of the optional header, essential for executable images, typically 0 for object files.
     // Characteristics (2 bytes): Flags indicating file attributes (e.g., executable, system file, DLL
     try expect(presult.pe.machine == 0x8664);
+}
+
+/// Decodes an ELF file into a BinaryDescription using the provided hint.
+fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, base_reader: std.fs.File.Reader, hint: ElfHint) !BinaryDescription {
+    // Reset reader to start
+    var reader = base_reader.interface;
+    reader.seek = 0;
+
+    // Read full file into a buffer (for simplicity; optimize later with streaming)
+    const file_size = (try file.stat()).size;
+    const file_buffer = try allocator.alloc(u8, file_size);
+    defer allocator.free(file_buffer);
+    _ = try reader.readAlloc(allocator, file_size);
+
+    // Parse ELF header (basic validation)
+    if (file_size < 64) return error.TooSmall; // Minimum ELF header size
+    const elf_hdr = std.elf.Header{ // Use Elf32 if hint.bitness == 32
+        // .e_ident = file_buffer[0..16].*,
+        .endian = hint.endianess,
+        .os_abi = std.elf.OSABI.NONE,
+        .is_64 = hint.bitness == 64,
+        .abi_version = 1,
+        .type = @enumFromInt(std.mem.readInt(u16, file_buffer[16..18], hint.endianess)),
+        .machine = @enumFromInt(std.mem.readInt(u16, file_buffer[18..20], hint.endianess)),
+        .entry = 0,
+        .phoff = 0,
+        .shoff = 0,
+        .phentsize = 0,
+        .phnum = 0,
+        .shentsize = 0,
+        .shnum = 0,
+        .shstrndx = 0,
+        // ... populate other fields as needed
+    };
+
+    // Populate identity fields from hint and header
+    const format = BinaryFileKind.elf;
+    const os_abi = switch (elf_hdr.e_ident[7]) { // EI_OSABI
+        std.elf.ELFOSABI_LINUX => OsAbi.linux,
+        std.elf.ELFOSABI_NONE => OsAbi.unknown,
+        else => OsAbi.unknown, // Map more as needed
+    };
+    const arch = switch (elf_hdr.e_machine) {
+        std.elf.EM_X86_64 => CpuArch.x86_64,
+        std.elf.EM_386 => CpuArch.x86,
+        std.elf.EM_AARCH64 => CpuArch.aarch64,
+        else => CpuArch.unknown,
+    };
+    const file_kind = switch (elf_hdr.e_type) {
+        std.elf.ET_EXEC => FileKind.executable,
+        std.elf.ET_DYN => FileKind.shared_library,
+        std.elf.ET_REL => FileKind.object,
+        else => FileKind.unknown,
+    };
+
+    // Security features (derive from header/flags; start with basics)
+    const pie = if (elf_hdr.e_type == std.elf.ET_DYN) Perhaps.yes else Perhaps.no;
+    const nx = Perhaps.unknown; // Derive from PT_GNU_STACK or similar
+    const relro = RelroConfig.unknown; // Parse dynamic section later
+    const stripped = StrippedState.unknown; // Check for .symtab
+    const aslr = Perhaps.unknown; // Often tied to PIE
+
+    // Structural fields: Parse sections, segments, etc.
+    // (Simplify: Use std.elf helpers or manual parsing)
+    var sections = std.ArrayList(Section).init(allocator);
+    defer sections.deinit();
+    // TODO: Iterate section headers, populate sections array
+
+    var segments = std.ArrayList(Section).init(allocator); // Note: Sections != Segments; map accordingly
+    defer segments.deinit();
+    // TODO: Parse program headers for segments
+
+    var imports = std.ArrayList([]const u8).init(allocator);
+    defer imports.deinit();
+    // TODO: Parse dynamic section for imports
+
+    var exports = std.ArrayList(Export).init(allocator);
+    defer exports.deinit();
+    // TODO: Parse symbol table for exports
+
+    var messages = std.ArrayList(Message).init(allocator);
+    defer messages.deinit();
+
+    const debug_info_present = false; // Check for .debug sections
+
+    return BinaryDescription{
+        .format = format,
+        .os_abi = os_abi,
+        .arch = arch,
+        .bitness = hint.bitness,
+        .endianess = hint.endianess,
+        .file_kind = file_kind,
+        .entrypoint_virtual_address = elf_hdr.e_entry,
+        .pie = pie,
+        .aslr = aslr,
+        .nx = nx,
+        .relro = relro,
+        .stripped = stripped,
+        .sections = try sections.toOwnedSlice(),
+        .segments = try segments.toOwnedSlice(),
+        .imports = try imports.toOwnedSlice(),
+        .exports = try exports.toOwnedSlice(),
+        .messages = try messages.toOwnedSlice(),
+        .debug_info_present = debug_info_present,
+    };
+}
+
+/// Analyzes a binary file and returns a unified BinaryDescription.
+/// Dispatches to format-specific decoders based on detected format.
+pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription {
+    var buf: [1024]u8 = @splat(0);
+    // Read initial prefix for detection (reuse prefix_length)
+    const reader = file.reader(buf[0..]);
+    var file_reader = reader.interface;
+    const buffer = try file_reader.readAlloc(allocator, prefix_length);
+    defer allocator.free(buffer);
+    file_reader.seek = 0;
+
+    const stage0 = detectFormat(buffer);
+    switch (stage0) {
+        .elf => |hint| return try decodeElf(allocator, file, reader, hint),
+        .macho => return error.UnsupportedVariant, // Stub for now
+        .pe => return error.UnsupportedVariant, // Stub for now
+        .ape => return error.UnsupportedVariant, // Stub for now
+        .unknown => return error.InvalidHeader,
+    }
+}
+
+test ": ELF basic parsing" {
+    var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const desc = try analyzeBinary(allocator, file);
+    defer {
+        allocator.free(desc.sections);
+        // Free other arrays...
+    }
+    try expect(desc.format == .elf);
+    try expect(desc.arch == .x86_64); // Assuming test file
 }

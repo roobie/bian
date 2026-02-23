@@ -175,6 +175,127 @@ const BinaryDescription = struct {
     backing_file: []u8,
 
     debug_info_present: bool,
+
+    pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer) !void {
+        // Short helpers and mappings
+        const fmt_str = switch (self.format) {
+            BinaryFileKind.elf => "elf",
+            BinaryFileKind.macho => "macho",
+            BinaryFileKind.pe => "pe",
+            BinaryFileKind.ape => "ape",
+            else => "unknown",
+        };
+        try w.print("format: {s}\n", .{fmt_str});
+
+        const os_str = switch (self.os_abi) {
+            OsAbi.linux => "linux",
+            OsAbi.macos => "macos",
+            OsAbi.windows => "windows",
+            else => "unknown",
+        };
+        try w.print("os_abi: {s}\n", .{os_str});
+
+        const arch_str = switch (self.arch) {
+            CpuArch.x86 => "x86",
+            CpuArch.x86_64 => "x86_64",
+            CpuArch.armv7 => "armv7",
+            CpuArch.aarch64 => "aarch64",
+            else => "unknown",
+        };
+        const endian_str = switch (self.endianess) {
+            Endian.little => "little",
+            Endian.big => "big",
+        };
+        try w.print("arch: {s} / {d}-bit / {s}\n", .{ arch_str, self.bitness, endian_str });
+
+        const file_kind_str = switch (self.file_kind) {
+            FileKind.executable => "executable",
+            FileKind.shared_library => "shared_library",
+            FileKind.object => "object",
+            else => "unknown",
+        };
+        try w.print("file_kind: {s}\n", .{file_kind_str});
+        try w.print("entrypoint: 0x{x}\n", .{self.entrypoint_virtual_address});
+
+        const pie_str = switch (self.pie) {
+            Perhaps.yes => "yes",
+            Perhaps.no => "no",
+            else => "unknown",
+        };
+        const aslr_str = switch (self.aslr) {
+            Perhaps.yes => "yes",
+            Perhaps.no => "no",
+            else => "unknown",
+        };
+        const nx_str = switch (self.nx) {
+            Perhaps.yes => "yes",
+            Perhaps.no => "no",
+            else => "unknown",
+        };
+        const relro_str = switch (self.relro) {
+            RelroConfig.unknown => "unknown",
+            RelroConfig.none => "none",
+            RelroConfig.partial => "partial",
+            RelroConfig.full => "full",
+            RelroConfig.not_applicable => "n/a",
+        };
+        const stripped_str = switch (self.stripped) {
+            StrippedState.unknown => "unknown",
+            StrippedState.yes => "yes",
+            StrippedState.no => "no",
+            StrippedState.partial => "partial",
+        };
+        try w.print("security: PIE={s}, ASLR={s}, NX={s}, RELRO={s}, stripped={s}\n", .{ pie_str, aslr_str, nx_str, relro_str, stripped_str });
+
+        try w.print("sections: {d}\n", .{self.sections.len});
+        var i: usize = 0;
+        for (self.sections) |sec| {
+            const name = if (sec.name.len != 0) sec.name else "(unnamed)";
+            const perm_str = switch (sec.permission) {
+                Permission.read => "r",
+                Permission.write => "w",
+                Permission.execute => "x",
+                else => "-",
+            };
+            try w.print("  [{d}] {s} size={d} offset=0x{x} perm={s}\n", .{ i, name, sec.size, sec.file_offset, perm_str });
+            i += 1;
+        }
+
+        try w.print("segments: {d}\n", .{self.segments.len});
+        i = 0;
+        for (self.segments) |seg| {
+            const perm_str = switch (seg.permission) {
+                Permission.read => "r",
+                Permission.write => "w",
+                Permission.execute => "x",
+                else => "-",
+            };
+            try w.print("  [{d}] offset=0x{x} size={d} perm={s}\n", .{ i, seg.file_offset, seg.size, perm_str });
+            i += 1;
+        }
+
+        try w.print("imports: {d}\n", .{self.imports.len});
+        for (self.imports) |imp| {
+            try w.print("  - {s}\n", .{imp});
+        }
+
+        try w.print("exports: {d}\n", .{self.exports.len});
+        for (self.exports) |ex| {
+            const kind_str = switch (ex.kind) {
+                ExportKind.function => "function",
+                ExportKind.variable => "variable",
+                else => "unknown",
+            };
+            try w.print("  - {s} ({s})\n", .{ ex.name, kind_str });
+        }
+
+        try w.print("messages: {d}\n", .{self.messages.len});
+        for (self.messages) |m| {
+            try w.print("  - {s}\n", .{m.body});
+        }
+
+        try w.print("debug_info_present: {s}\n", .{if (self.debug_info_present) "yes" else "no"});
+    }
 };
 
 pub fn bufferedRead(path: []const u8, buffer: []u8, max_length: usize) !void {
@@ -473,4 +594,9 @@ test ": ELF basic parsing" {
     try expect(desc.format == .elf);
     try expect(desc.arch == .x86_64); // Assuming test file
     //std.debug.print("{}\n", .{desc});
+    //
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    try desc.writePretty(&stderr_writer.interface);
+    try stderr_writer.interface.flush();
 }

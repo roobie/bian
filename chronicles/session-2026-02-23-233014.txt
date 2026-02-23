@@ -260,5 +260,37 @@ Chronicle status
 ----------------
 This file is up-to-date with the work performed in this session: initial implementation using std.elf helpers, the analyzeBinary reader fix, leak tracking and fixes, then conversion to a zero-copy model and final test verification.
 
-End of chronicle (updated)
---------------------------
+
+Addendum — 2026-02-24 00:12:00 +01:00
+-----------------------------------
+This final addendum records the addition of a pretty-printer method and a small test runner observation.
+
+1) toPretty / writePretty added
+   - I added a method on BinaryDescription named `writePretty(self: *const BinaryDescription, w: *std.io.Writer) !void` that writes a human-friendly summary of the binary to the provided writer. It prints:
+     - format, OS ABI, architecture, bitness, endian
+     - file kind, entrypoint
+     - security features (PIE, ASLR, NX, RELRO, stripped)
+     - sections (index, name, size, offset, permissions)
+     - segments (index, offset, size, permissions)
+     - imports, exports, messages
+     - debug_info_present flag
+
+   - The function writes directly to the writer (zero-allocation) using `w.print` calls.
+
+2) Test writer buffer and flush
+   - While exercising the new method I observed truncated output when running `zig build test` because the test created a File.Writer backed by a 1 KiB buffer and did not flush it. The writer retains any unwritten buffered bytes until `flush` or the writer is drained.
+   - Fixes:
+     - The test author (you) patched the test to call `flush` on the writer after calling `writePretty`. That is the minimal and correct fix.
+     - Alternatives:
+       * Use `std.io.Writer.Allocating` to capture full output into a dynamically growing buffer (useful for assertions in tests).
+       * Make the writer buffer larger, but that is brittle.
+
+3) Test run
+   - After the test was patched to flush, `zig build test` prints the pretty output to stderr and the tests complete successfully.
+
+4) Notes and next steps
+   - The pretty-printer is intentionally simple; if you want formatted columns, hex width padding, or localized output, we can extend it.
+   - Consider adding unit tests that assert specific pretty-printer lines using `std.io.Writer.Allocating`.
+
+End of chronicle (final)
+------------------------

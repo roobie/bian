@@ -169,9 +169,10 @@ const BinaryDescription = struct {
 
     messages: []Message,
 
-    // Allocator-owned buffers (e.g. per-section name copies) which must be
-    // freed by callers when they are done with the BinaryDescription.
-    owned_buffers: [][]u8,
+    // Backing buffer containing the whole file. Section name slices point
+    // into this buffer (zero-copy). Callers must free this buffer via
+    // freeBinaryDescription when the description is no longer needed.
+    backing_file: []u8,
 
     debug_info_present: bool,
 };
@@ -303,12 +304,13 @@ test "pe.amd64" {
 
 /// Decodes an ELF file into a BinaryDescription using the provided hint.
 fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription {
-    // 1) read whole file into an allocator-owned buffer
+    // 1) read whole file into an allocator-owned buffer (we keep this as
+    //    the backing buffer so section name slices can point into it)
     const stat = try file.stat();
     const file_size = @as(usize, stat.size);
     var file_buf = try allocator.alloc(u8, file_size);
-    // make sure to free the buffer because we won't return ownership below
-    defer allocator.free(file_buf);
+    var keep_backing: bool = false;
+    defer if (!keep_backing) allocator.free(file_buf);
 
     var fr = file.reader(file_buf);
     // fill the buffer completely
@@ -351,12 +353,9 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
         }
     }
 
-    // 5) collect sections (copy names into allocator-owned buffers so they live after this function)
+    // 5) collect sections (zero-copy: section names point into file_buf)
     var sections_list = try std.ArrayList(Section).initCapacity(allocator, 0);
     defer sections_list.deinit(allocator);
-
-    var name_allocs_list = try std.ArrayList([]u8).initCapacity(allocator, 0);
-    defer name_allocs_list.deinit(allocator);
 
     var sh_iter2 = header.iterateSectionHeadersBuffer(file_buf);
     while (true) {
@@ -365,14 +364,8 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
         if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
             const tail = shstrtab[@as(usize, sh.sh_name)..];
             const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
-            // allocate a small copy for the name (so it remains valid after we free file_buf)
-            const name_buf = try allocator.alloc(u8, end);
-            @memcpy(name_buf, tail[0..end]);
-            try name_allocs_list.append(allocator, name_buf);
-            name_slice = name_buf;
-            // Note: these per-section name buffers are tracked in name_allocs_list
-            // and will be returned to the caller inside desc.owned_buffers so they
-            // can be freed later.
+            // zero-copy: point into the backing buffer
+            name_slice = tail[0..end];
         }
         const perm = if ((sh.sh_flags & elf.SHF_EXECINSTR) != 0) Permission.execute else if ((sh.sh_flags & elf.SHF_WRITE) != 0) Permission.write else if ((sh.sh_flags & elf.SHF_ALLOC) != 0) Permission.read else Permission.none;
         try sections_list.append(allocator, Section{
@@ -426,12 +419,13 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
         .imports = try imports.toOwnedSlice(allocator),
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
-        .owned_buffers = try name_allocs_list.toOwnedSlice(allocator),
+        .backing_file = file_buf,
         .debug_info_present = false,
     };
 
-    // Important: we copied section-name strings to allocator-owned memory above, so it is safe to free file_buf.
-    // If instead we want to avoid copying names, keep file_buf alive and store it inside BinaryDescription so callers can read names from it later.
+    // We are returning `file_buf` inside `desc.backing_file`. Prevent the
+    // deferred free from running.
+    keep_backing = true;
     return desc;
 }
 
@@ -439,18 +433,15 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
 /// provided allocator. Call this when you are finished using a description
 /// produced by decodeElf/analyzeBinary.
 pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescription) void {
-    // Free owned buffers (e.g. per-section name allocations)
-    for (desc.owned_buffers) |b| {
-        if (b.len != 0) allocator.free(b);
-    }
-    if (desc.owned_buffers.len != 0) allocator.free(desc.owned_buffers);
-
     // Free top-level slices allocated with toOwnedSlice()
     if (desc.sections.len != 0) allocator.free(desc.sections);
     if (desc.segments.len != 0) allocator.free(desc.segments);
     if (desc.imports.len != 0) allocator.free(desc.imports);
     if (desc.exports.len != 0) allocator.free(desc.exports);
     if (desc.messages.len != 0) allocator.free(desc.messages);
+
+    // Free backing file buffer last
+    if (desc.backing_file.len != 0) allocator.free(desc.backing_file);
 }
 
 /// Analyzes a binary file and returns a unified BinaryDescription.
@@ -481,4 +472,5 @@ test ": ELF basic parsing" {
     defer freeBinaryDescription(allocator, desc);
     try expect(desc.format == .elf);
     try expect(desc.arch == .x86_64); // Assuming test file
+    //std.debug.print("{}\n", .{desc});
 }

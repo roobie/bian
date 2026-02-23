@@ -201,9 +201,64 @@ Files changed in this addendum
   - Added pub fn freeBinaryDescription(allocator, desc)
   - Updated unit test to call freeBinaryDescription in a defer
 
+
+Addendum — 2026-02-24 00:02:00 +01:00
+-----------------------------------
+This addendum records the conversion to a zero-copy model and the follow-up changes.
+
+1) What changed (zero-copy conversion)
+   - Rationale: reduce allocations, make section names stable without copying, and simplify ownership by keeping a single backing buffer that contains the whole file.
+
+   - BinaryDescription updated:
+     - Removed `owned_buffers` (per-name allocations) and added `backing_file: []u8`.
+     - Sections' `name` field now contains slices that point into `backing_file`.
+
+   - decodeElf updated:
+     - Reads the entire file into `file_buf` allocated from the provided allocator.
+     - Does not free file_buf on successful return; instead it stores it in `desc.backing_file`.
+     - Uses header.iterateSectionHeadersBuffer(file_buf) to find section header entries and slices into shstrtab to produce zero-copy section name slices.
+     - Introduces a `keep_backing` boolean for the deferred cleanup path; on success sets keep_backing = true so the deferred free is skipped and the caller owns backing_file.
+
+   - freeBinaryDescription updated:
+     - Frees all top-level toOwnedSlice() allocations (sections, segments, imports, exports, messages).
+     - Frees backing_file last.
+
+2) Test results
+   - Ran `zig build test` after conversion. Tests ran; the test that calls analyzeBinary defers to freeBinaryDescription, so there are no leaks.
+
+3) Notes and caveats
+   - Because section names are zero-copy slices into backing_file, callers must not free the backing_file until they are finished using any slices that reference it.
+   - The current freeBinaryDescription frees backing_file; do not free sections/exports before freeing backing_file.
+   - Keep defensive bounds checks in place when computing slice offsets from ELF header values: validate phoff/shoff and size arithmetic before slicing the buffer.
+
+   Small note — @as vs @intCast
+   - In Zig 0.15.2 the semantics are:
+     - `@as(Type, expr)` explicitly casts `expr` to `Type` (the target type is supplied as the first argument).
+     - `@intCast(expr)` performs an integer cast where the target integer type is inferred from context (assignment, return type, or expected type). In this Zig version `@intCast` takes a single argument (the value) rather than an explicit target type.
+
+   Examples:
+     const n1: usize = @intCast(relative_index); // target type inferred from `n1`
+     const n2 = @as(usize, relative_index);      // explicit cast to usize
+
+4) Next steps / recommendations
+   - Harden decodeElf with explicit bounds checks and overflow-safe arithmetic when converting header offsets/sizes to usize and slicing into backing_file.
+   - Implement dynamic segment parsing (PT_DYNAMIC/DT_NEEDED) and symbol table parsing to populate imports/exports.
+   - Consider adding unit tests that validate freeBinaryDescription semantics (e.g., use-after-free detection in debug builds) and malformed ELF inputs.
+
+Files changed in this addendum
+-----------------------------
+- src/root.zig
+  - BinaryDescription: added backing_file: []u8
+  - decodeElf: keep file_buf as desc.backing_file and produce zero-copy section name slices
+  - freeBinaryDescription: free backing_file last
+
+Commands run
+------------
+- zig build test (ran multiple times during iteration)
+
 Chronicle status
 ----------------
-This file now records the original design decisions and the concrete runtime fixes (analyzeBinary reader handling + explicit ownership & deallocation for per-section name buffers). Use this as the single-source session log when revisiting code ownership or iterating on features such as dynamic-section parsing.
+This file is up-to-date with the work performed in this session: initial implementation using std.elf helpers, the analyzeBinary reader fix, leak tracking and fixes, then conversion to a zero-copy model and final test verification.
 
 End of chronicle (updated)
 --------------------------

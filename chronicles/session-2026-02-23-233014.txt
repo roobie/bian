@@ -1,0 +1,209 @@
+Session chronicle — 2026-02-23 23:30:14 +01:00
+
+Summary
+-------
+Interactive session to leverage Zig stdlib ELF parsing from src/root.zig, implement decodeElf using std.elf helpers, fix std.ArrayList API mismatches, and iterate until tests compile.
+
+Key actions performed
+---------------------
+1. Read stdlib ELF implementation: /home/jani/.local/share/mise/installs/zig/0.15.2/lib/std/elf.zig to learn about Header.read, iterateProgramHeadersBuffer, iterateSectionHeadersBuffer, constants and types.
+
+2. Implemented decodeElf in src/root.zig to:
+   - read whole file into an allocator-owned buffer
+   - parse the ELF header using std.elf.Header.read
+   - locate the section header string table (.shstrtab)
+   - iterate section headers and program headers using the buffer-based iterators
+   - collect basic Section and Segment information into std.ArrayList-backed arrays
+   - return a BinaryDescription filled with the collected info
+
+3. Fixed compiler errors due to std.ArrayList API changes (std v0.15.2):
+   - Replaced deprecated/older pattern `std.ArrayList(T).init(allocator)` with `try std.ArrayList(T).initCapacity(allocator, 0)`.
+   - Use `deinit(allocator)` when deinitializing.
+   - Call `toOwnedSlice(allocator)` to obtain the caller-owned slice.
+   - Use `append(allocator, item)` instead of the old append() signature.
+
+4. Small correctness fixes in the code: replaced mem.copy with @memcpy for slices, explicit @as/@intCast conversions for offset sizes.
+
+Problems observed / Recommendations
+-----------------------------------
+1) elf.Header.read call
+   - The std API expects `*std.Io.Reader`. When using `std.io.Reader.fixed(...)`, pass `&fixed_reader.interface` (the `interface` field) to `elf.Header.read`. Ensure the code uses `elf.Header.read(&fixed_reader.interface)`.
+
+2) Memory ownership and leaks
+   - Current decodeElf allocates `file_buf` and frees it at function end. While collecting section names the code allocates per-name buffers (allocator.alloc) and stores `Section.name` pointers to those allocations, but there is no corresponding free for these name buffers anywhere in the repository.
+   - Two remedies:
+     A) Zero-copy: don't copy names. Keep `file_buf` alive by adding a backing buffer field to BinaryDescription (e.g. `backing_file: []const u8`) and point `Section.name` into that backing buffer (slices). Then the caller frees `backing_file` when done.
+     B) Pool allocations: allocate one contiguous name pool (or an ArrayList<u8> that stores all names) and free it in a `freeBinaryDescription` helper.
+   - Also remember to free the toOwnedSlice() results (sections, segments, imports, exports, messages) with `allocator.free(slice)` when done and free any backing buffers.
+
+3) Robustness checks
+   - Validate header fields like `phoff`, `shoff`, `phnum`, `shnum`, `phentsize`, `shentsize` are plausible and that multiplication/offset computations cannot overflow (use bounds checks before indexing the buffer).
+   - Check `fr.interface.fill(file_size)` for errors; use read loops or `file.readAll` if you prefer a simpler approach.
+
+4) Feature enhancements
+   - Parse dynamic segment (PT_DYNAMIC) and iterate Dyn entries to discover DT_NEEDED strings and .dynstr/.dynsym to populate `imports`.
+   - Parse symbol tables (SHT_SYMTAB / SHT_DYNSYM) to populate `exports`.
+   - Detect NX from PT_GNU_STACK program header flags, detect RELRO from PT_GNU_RELRO and dynamic flags.
+   - Add a `freeBinaryDescription(allocator, desc)` utility to clean up all allocated resources.
+
+5) API usage notes
+   - You used `std.ArrayList(T).initCapacity(allocator, 0)` and `append(allocator, item)` which is the correct API for `array_list.Aligned` in std v0.15.2.
+   - `toOwnedSlice(allocator)` hands ownership of the returned backing memory to the caller; free with `allocator.free(slice)` when done.
+
+Suggested minimal code changes (examples)
+----------------------------------------
+- Header.read call (fix):
+
+    var fixed_reader = std.io.Reader.fixed(file_buf);
+    const header = try elf.Header.read(&fixed_reader.interface);
+
+- Keep backing buffer alive (zero-copy names): extend BinaryDescription
+
+    const BinaryDescription = struct {
+        ...
+        backing_file: []const u8, // owns file_buf
+    };
+
+    // In decodeElf: don't free file_buf; set backing_file = file_buf
+
+- Or provide a deinitializer:
+
+    pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescription) void {
+        // free slices
+        if (desc.sections.len != 0) allocator.free(desc.sections);
+        if (desc.segments.len != 0) allocator.free(desc.segments);
+        if (desc.imports.len != 0) allocator.free(desc.imports);
+        if (desc.exports.len != 0) allocator.free(desc.exports);
+        if (desc.messages.len != 0) allocator.free(desc.messages);
+        // if backing_file was allocated with allocator, free it
+        if (desc.backing_file.len != 0) allocator.free(desc.backing_file);
+    }
+
+Checklist / next steps
+----------------------
+- Pick a memory ownership model for names (backing buffer vs per-name allocations) and implement a `freeBinaryDescription` helper.
+- Implement dynamic section and symbol parsing to populate imports/exports.
+- Add bounds checks where offsets/sizes from esoteric binaries are used for safety.
+- Consider streaming API (header.iterateSectionHeaders) to avoid a full-file read when parsing very large files.
+
+Files changed during this session
+--------------------------------
+- src/root.zig: updated decodeElf to use std.elf helpers; switched ArrayList usage to `initCapacity`/`append(allocator, ...)`/`toOwnedSlice(allocator)`.
+
+Commands run during the session (examples)
+-----------------------------------------
+- grep and read files in stdlib
+- zig test  (ran multiple times while iterating on fixes)
+
+
+Addendum — 2026-02-23 23:57:00 +01:00
+-----------------------------------
+This addendum records the concrete runtime failure I hit when running the tests, the exact fix I applied, and the follow-up memory-leak fixes I made so callers can properly free resources.
+
+1) Runtime crash observed
+   - Command: `zig build test`
+   - Symptom: test runner crashed with a panic: "switch on corrupt value" coming from std/fs/File.zig when analyzeBinary called readAlloc on a copied Reader interface.
+   - Short stack trace (abbreviated):
+       thread ... panic: switch on corrupt value
+       /.../lib/std/fs/File.zig:1344:17: in readVec
+       /.../lib/std/Io/Reader.zig:372:37: in readVec
+       /.../lib/std/Io/Reader.zig:685:21: in readAlloc
+       src/root.zig:433:45: in analyzeBinary
+
+   - Root cause: analyzeBinary copied the Reader.interface value out of the fs.File.Reader into a standalone local (var file_reader = reader.interface) and then invoked methods on that copy. std.io.Reader implementations rely on computing the parent object via @fieldParentPtr("interface", io_reader). Using an independent interface object made @fieldParentPtr compute an invalid parent pointer, leading to the corrupt-value panic.
+
+2) Fix applied (analyzeBinary)
+   - Replace the broken code (simplified form):
+
+       const reader = file.reader(buf[0..]);
+       var file_reader = reader.interface;
+       const buffer = try file_reader.readAlloc(allocator, prefix_length);
+       defer allocator.free(buffer);
+       file_reader.seek = 0;
+
+     with the correct approach:
+
+       var reader = file.reader(buf[0..]);
+       const buffer = try reader.interface.readAlloc(allocator, prefix_length);
+       defer allocator.free(buffer);
+       try reader.seekTo(0);
+
+   - Rationale: call readAlloc on the interface that actually lives inside the fs.File.Reader (reader.interface) so @fieldParentPtr works correctly, and reset the Reader via reader.seekTo(0) (do not mutate the interface fields directly).
+
+3) Memory leaks discovered after crash fix
+   - After fixing the crash, `zig build test` reported leaked allocations. The leaks fragmented into two categories:
+     a) Per-section name buffers created with `allocator.alloc(u8, end)` and never freed.
+     b) The slices returned by toOwnedSlice() (sections, segments, imports, etc.) which require the caller to free the backing memory with allocator.free(slice).
+
+4) Leak fixes applied
+   - Strategy chosen: keep the name-copy behavior (so Section.name is stable after decodeElf returns) but make ownership explicit and freeable by callers.
+   - Changes made to src/root.zig:
+     - Added local ArrayList([]u8) name_allocs_list to track all per-section name allocations.
+     - For every name_buf allocation, appended it to name_allocs_list so we can later free them.
+     - Added a new field to BinaryDescription: `owned_buffers: [][]u8` which holds the owned name buffers as an owned slice.
+     - Populate `.owned_buffers = try name_allocs_list.toOwnedSlice(allocator)` when building the BinaryDescription.
+     - Added pub fn freeBinaryDescription(allocator, desc) that frees all entries in desc.owned_buffers and frees desc.owned_buffers and all top-level slices created by toOwnedSlice() (sections, segments, imports, exports, messages).
+     - Updated the test to call defer freeBinaryDescription(allocator, desc) so the test frees everything it received.
+
+   - Code snippets (before/after):
+
+     Before (problem):
+
+         const name_buf = try allocator.alloc(u8, end);
+         @memcpy(name_buf, tail[0..end]);
+         name_slice = name_buf; // allocated but not tracked for freeing
+
+     After (fixed):
+
+         const name_buf = try allocator.alloc(u8, end);
+         @memcpy(name_buf, tail[0..end]);
+         try name_allocs_list.append(allocator, name_buf);
+         name_slice = name_buf;
+
+     BinaryDescription change:
+
+         // added field
+         owned_buffers: [][]u8,
+
+         // desc construction
+         .owned_buffers = try name_allocs_list.toOwnedSlice(allocator),
+
+     New helper (summary):
+
+         pub fn freeBinaryDescription(allocator, desc) {
+             // free per-name allocations
+             for (desc.owned_buffers) |b| allocator.free(b);
+             // free the owned_buffers slice itself
+             if (desc.owned_buffers.len != 0) allocator.free(desc.owned_buffers);
+             // free top-level toOwnedSlice() results
+             if (desc.sections.len != 0) allocator.free(desc.sections);
+             if (desc.segments.len != 0) allocator.free(desc.segments);
+             if (desc.imports.len != 0) allocator.free(desc.imports);
+             if (desc.exports.len != 0) allocator.free(desc.exports);
+             if (desc.messages.len != 0) allocator.free(desc.messages);
+         }
+
+5) Final test results
+   - After applying the analyzeBinary fix and the leak fixes, I ran `zig build test` until no leaks/crashes remained.
+   - Final run: tests executed and completed; the repo's test output prints the working directory (CWD: /home/jani/devel/bian) and there were no crashes or leak failures. The helper test that exercised analyzeBinary now defers freeBinaryDescription(allocator, desc) and therefore does not leak.
+
+6) Recommendations / next steps
+   - Consider switching to a zero-copy name model: store file_buf (the whole file backing buffer) inside BinaryDescription as `backing_file: []const u8` and point Section.name at slices into backing_file. That eliminates per-name allocations and simplifies deallocation (only one buffer to free).
+   - Add bounds checks (phoff/shoff/size arithmetic). Defensive programming here prevents crashes on malformed binaries.
+   - Populate imports/exports by parsing PT_DYNAMIC and symbol tables; detect RELRO/NX/ASLR properties via dynamic and program header flags.
+   - Keep freeBinaryDescription as a convenience deallocator if you continue using per-name allocations.
+
+Files changed in this addendum
+-----------------------------
+- src/root.zig
+  - analyzeBinary: use reader.interface.readAlloc(allocator, prefix_length) and try reader.seekTo(0) (fixed corrupt-reader panic)
+  - decodeElf: track per-section name allocations via a local ArrayList and expose them in BinaryDescription.owned_buffers
+  - Added pub fn freeBinaryDescription(allocator, desc)
+  - Updated unit test to call freeBinaryDescription in a defer
+
+Chronicle status
+----------------
+This file now records the original design decisions and the concrete runtime fixes (analyzeBinary reader handling + explicit ownership & deallocation for per-section name buffers). Use this as the single-source session log when revisiting code ownership or iterating on features such as dynamic-section parsing.
+
+End of chronicle (updated)
+--------------------------

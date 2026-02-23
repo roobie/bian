@@ -2,6 +2,7 @@
 const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
+const elf = std.elf;
 
 const expect = std.testing.expect;
 
@@ -297,108 +298,129 @@ test "pe.amd64" {
 }
 
 /// Decodes an ELF file into a BinaryDescription using the provided hint.
-fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, base_reader: std.fs.File.Reader, hint: ElfHint) !BinaryDescription {
-    // Reset reader to start
-    var reader = base_reader.interface;
-    reader.seek = 0;
+fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription {
+    // 1) read whole file into an allocator-owned buffer
+    const stat = try file.stat();
+    const file_size = @as(usize, stat.size);
+    var file_buf = try allocator.alloc(u8, file_size);
+    // make sure to free the buffer because we won't return ownership below
+    defer allocator.free(file_buf);
 
-    // Read full file into a buffer (for simplicity; optimize later with streaming)
-    const file_size = (try file.stat()).size;
-    const file_buffer = try allocator.alloc(u8, file_size);
-    defer allocator.free(file_buffer);
-    _ = try reader.readAlloc(allocator, file_size);
+    var fr = file.reader(file_buf);
+    // fill the buffer completely
+    try fr.interface.fill(file_size);
 
-    // Parse ELF header (basic validation)
-    if (file_size < 64) return error.TooSmall; // Minimum ELF header size
-    const elf_hdr = std.elf.Header{ // Use Elf32 if hint.bitness == 32
-        // .e_ident = file_buffer[0..16].*,
-        .endian = hint.endianess,
-        .os_abi = std.elf.OSABI.NONE,
-        .is_64 = hint.bitness == 64,
-        .abi_version = 1,
-        .type = @enumFromInt(std.mem.readInt(u16, file_buffer[16..18], hint.endianess)),
-        .machine = @enumFromInt(std.mem.readInt(u16, file_buffer[18..20], hint.endianess)),
-        .entry = 0,
-        .phoff = 0,
-        .shoff = 0,
-        .phentsize = 0,
-        .phnum = 0,
-        .shentsize = 0,
-        .shnum = 0,
-        .shstrndx = 0,
-        // ... populate other fields as needed
-    };
+    // 2) parse ELF header using std.elf
+    var fixed_reader = std.io.Reader.fixed(file_buf);
+    const header = try elf.Header.read(&fixed_reader);
 
-    // Populate identity fields from hint and header
-    const format = BinaryFileKind.elf;
-    const os_abi = switch (elf_hdr.e_ident[7]) { // EI_OSABI
-        std.elf.ELFOSABI_LINUX => OsAbi.linux,
-        std.elf.ELFOSABI_NONE => OsAbi.unknown,
-        else => OsAbi.unknown, // Map more as needed
-    };
-    const arch = switch (elf_hdr.e_machine) {
-        std.elf.EM_X86_64 => CpuArch.x86_64,
-        std.elf.EM_386 => CpuArch.x86,
-        std.elf.EM_AARCH64 => CpuArch.aarch64,
+    // 3) map a few fields
+    const bitness: u8 = if (header.is_64) 64 else 32;
+    const arch = switch (header.machine) {
+        elf.EM.X86_64 => CpuArch.x86_64,
+        elf.EM.AARCH64 => CpuArch.aarch64,
+        // the EM enum contains a variant named "386" which you reference as: elf.EM.@"386"
+        elf.EM.@"386" => CpuArch.x86,
         else => CpuArch.unknown,
     };
-    const file_kind = switch (elf_hdr.e_type) {
-        std.elf.ET_EXEC => FileKind.executable,
-        std.elf.ET_DYN => FileKind.shared_library,
-        std.elf.ET_REL => FileKind.object,
+    const file_kind = switch (header.type) {
+        elf.ET.EXEC => FileKind.executable,
+        elf.ET.DYN => FileKind.shared_library,
+        elf.ET.REL => FileKind.object,
         else => FileKind.unknown,
     };
 
-    // Security features (derive from header/flags; start with basics)
-    const pie = if (elf_hdr.e_type == std.elf.ET_DYN) Perhaps.yes else Perhaps.no;
-    const nx = Perhaps.unknown; // Derive from PT_GNU_STACK or similar
-    const relro = RelroConfig.unknown; // Parse dynamic section later
-    const stripped = StrippedState.unknown; // Check for .symtab
-    const aslr = Perhaps.unknown; // Often tied to PIE
+    // 4) find the section header string table (shstrtab) so we can get section names
+    var shstrtab: []const u8 = &[_]u8{};
+    if (header.shstrndx != 0) {
+        var sh_iter = header.iterateSectionHeadersBuffer(file_buf);
+        var idx: usize = 0;
+        while (true) {
+            const sh = try sh_iter.next() orelse break;
+            if (idx == @as(usize, header.shstrndx)) {
+                const off: usize = @intCast(sh.sh_offset);
+                const sz: usize = @intCast(sh.sh_size);
+                if (off + sz <= file_buf.len) shstrtab = file_buf[off .. off + sz];
+                break;
+            }
+            idx += 1;
+        }
+    }
 
-    // Structural fields: Parse sections, segments, etc.
-    // (Simplify: Use std.elf helpers or manual parsing)
-    var sections = std.ArrayList(Section).init(allocator);
-    defer sections.deinit();
-    // TODO: Iterate section headers, populate sections array
+    // 5) collect sections (copy names into allocator-owned buffers so they live after this function)
+    var sections_list = std.ArrayList(Section).init(allocator);
+    defer sections_list.deinit();
+    var sh_iter2 = header.iterateSectionHeadersBuffer(file_buf);
+    while (true) {
+        const sh = try sh_iter2.next() orelse break;
+        var name_slice: []const u8 = "unknown";
+        if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
+            const tail = shstrtab[@as(usize, sh.sh_name)..];
+            const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
+            // allocate a small copy for the name (so it remains valid after we free file_buf)
+            const name_buf = try allocator.alloc(u8, end);
+            mem.copy(u8, name_buf, tail[0..end]);
+            name_slice = name_buf;
+            // Note: caller must later free these per-section name buffers (or provide a deallocator).
+        }
+        const perm = if ((sh.sh_flags & elf.SHF_EXECINSTR) != 0) Permission.execute else if ((sh.sh_flags & elf.SHF_WRITE) != 0) Permission.write else if ((sh.sh_flags & elf.SHF_ALLOC) != 0) Permission.read else Permission.none;
+        try sections_list.append(Section{
+            .name = name_slice,
+            .kind = SectionKind.unknown,
+            .size = sh.sh_size,
+            .file_offset = sh.sh_offset,
+            .permission = perm,
+        });
+    }
 
-    var segments = std.ArrayList(Section).init(allocator); // Note: Sections != Segments; map accordingly
-    defer segments.deinit();
-    // TODO: Parse program headers for segments
+    // 6) collect segments from program headers
+    var segments_list = std.ArrayList(Section).init(allocator);
+    defer segments_list.deinit();
+    var ph_iter = header.iterateProgramHeadersBuffer(file_buf);
+    while (true) {
+        const ph = try ph_iter.next() orelse break;
+        const perm = if ((ph.p_flags & elf.PF_X) != 0) Permission.execute else if ((ph.p_flags & elf.PF_W) != 0) Permission.write else if ((ph.p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
+        try segments_list.append(Section{
+            .name = "", // segments typically don't have human names
+            .kind = SectionKind.unknown,
+            .size = ph.p_filesz,
+            .file_offset = ph.p_offset,
+            .permission = perm,
+        });
+    }
 
+    // 7) build and return BinaryDescription (imports/exports parsing omitted here)
     var imports = std.ArrayList([]const u8).init(allocator);
     defer imports.deinit();
-    // TODO: Parse dynamic section for imports
-
     var exports = std.ArrayList(Export).init(allocator);
     defer exports.deinit();
-    // TODO: Parse symbol table for exports
-
     var messages = std.ArrayList(Message).init(allocator);
     defer messages.deinit();
 
-    const debug_info_present = false; // Check for .debug sections
-
-    return BinaryDescription{
-        .format = format,
-        .os_abi = os_abi,
+    const desc = BinaryDescription{
+        .format = BinaryFileKind.elf,
+        .os_abi = OsAbi.unknown, // map header.os_abi -> your OsAbi as needed
         .arch = arch,
-        .bitness = hint.bitness,
-        .endianess = hint.endianess,
+        .bitness = bitness,
+        .endianess = header.endian,
         .file_kind = file_kind,
-        .entrypoint_virtual_address = elf_hdr.e_entry,
-        .pie = pie,
-        .aslr = aslr,
-        .nx = nx,
-        .relro = relro,
-        .stripped = stripped,
-        .sections = try sections.toOwnedSlice(),
-        .segments = try segments.toOwnedSlice(),
+        .entrypoint_virtual_address = header.entry,
+        .pie = if (header.type == elf.ET.DYN) Perhaps.yes else Perhaps.no,
+        .aslr = Perhaps.unknown,
+        .nx = Perhaps.unknown,
+        .relro = RelroConfig.unknown,
+        .stripped = StrippedState.unknown,
+        .sections = try sections_list.toOwnedSlice(),
+        .segments = try segments_list.toOwnedSlice(),
         .imports = try imports.toOwnedSlice(),
         .exports = try exports.toOwnedSlice(),
         .messages = try messages.toOwnedSlice(),
-        .debug_info_present = debug_info_present,
+        .debug_info_present = false,
     };
+
+    // Important: we copied section-name strings to allocator-owned memory above, so it is safe to free file_buf.
+    // If instead we want to avoid copying names, keep file_buf alive and store it inside BinaryDescription so callers can read names from it later.
+    return desc;
 }
 
 /// Analyzes a binary file and returns a unified BinaryDescription.
@@ -414,7 +436,7 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDes
 
     const stage0 = detectFormat(buffer);
     switch (stage0) {
-        .elf => |hint| return try decodeElf(allocator, file, reader, hint),
+        .elf => return try decodeElf(allocator, file),
         .macho => return error.UnsupportedVariant, // Stub for now
         .pe => return error.UnsupportedVariant, // Stub for now
         .ape => return error.UnsupportedVariant, // Stub for now

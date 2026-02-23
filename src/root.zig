@@ -338,8 +338,8 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
         while (true) {
             const sh = try sh_iter.next() orelse break;
             if (idx == @as(usize, header.shstrndx)) {
-                const off: usize = @intCast(sh.sh_offset);
-                const sz: usize = @intCast(sh.sh_size);
+                const off = @as(usize, sh.sh_offset);
+                const sz = @as(usize, sh.sh_size);
                 if (off + sz <= file_buf.len) shstrtab = file_buf[off .. off + sz];
                 break;
             }
@@ -348,8 +348,8 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
     }
 
     // 5) collect sections (copy names into allocator-owned buffers so they live after this function)
-    var sections_list = std.ArrayList(Section).init(allocator);
-    defer sections_list.deinit();
+    var sections_list = try std.ArrayList(Section).initCapacity(allocator, 0);
+    defer sections_list.deinit(allocator);
     var sh_iter2 = header.iterateSectionHeadersBuffer(file_buf);
     while (true) {
         const sh = try sh_iter2.next() orelse break;
@@ -359,12 +359,12 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
             const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
             // allocate a small copy for the name (so it remains valid after we free file_buf)
             const name_buf = try allocator.alloc(u8, end);
-            mem.copy(u8, name_buf, tail[0..end]);
+            @memcpy(name_buf, tail[0..end]);
             name_slice = name_buf;
             // Note: caller must later free these per-section name buffers (or provide a deallocator).
         }
         const perm = if ((sh.sh_flags & elf.SHF_EXECINSTR) != 0) Permission.execute else if ((sh.sh_flags & elf.SHF_WRITE) != 0) Permission.write else if ((sh.sh_flags & elf.SHF_ALLOC) != 0) Permission.read else Permission.none;
-        try sections_list.append(Section{
+        try sections_list.append(allocator, Section{
             .name = name_slice,
             .kind = SectionKind.unknown,
             .size = sh.sh_size,
@@ -374,13 +374,13 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
     }
 
     // 6) collect segments from program headers
-    var segments_list = std.ArrayList(Section).init(allocator);
-    defer segments_list.deinit();
+    var segments_list = try std.ArrayList(Section).initCapacity(allocator, 0);
+    defer segments_list.deinit(allocator);
     var ph_iter = header.iterateProgramHeadersBuffer(file_buf);
     while (true) {
         const ph = try ph_iter.next() orelse break;
         const perm = if ((ph.p_flags & elf.PF_X) != 0) Permission.execute else if ((ph.p_flags & elf.PF_W) != 0) Permission.write else if ((ph.p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
-        try segments_list.append(Section{
+        try segments_list.append(allocator, Section{
             .name = "", // segments typically don't have human names
             .kind = SectionKind.unknown,
             .size = ph.p_filesz,
@@ -390,12 +390,12 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
     }
 
     // 7) build and return BinaryDescription (imports/exports parsing omitted here)
-    var imports = std.ArrayList([]const u8).init(allocator);
-    defer imports.deinit();
-    var exports = std.ArrayList(Export).init(allocator);
-    defer exports.deinit();
-    var messages = std.ArrayList(Message).init(allocator);
-    defer messages.deinit();
+    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer imports.deinit(allocator);
+    var exports = try std.ArrayList(Export).initCapacity(allocator, 0);
+    defer exports.deinit(allocator);
+    var messages = try std.ArrayList(Message).initCapacity(allocator, 0);
+    defer messages.deinit(allocator);
 
     const desc = BinaryDescription{
         .format = BinaryFileKind.elf,
@@ -410,11 +410,11 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
         .nx = Perhaps.unknown,
         .relro = RelroConfig.unknown,
         .stripped = StrippedState.unknown,
-        .sections = try sections_list.toOwnedSlice(),
-        .segments = try segments_list.toOwnedSlice(),
-        .imports = try imports.toOwnedSlice(),
-        .exports = try exports.toOwnedSlice(),
-        .messages = try messages.toOwnedSlice(),
+        .sections = try sections_list.toOwnedSlice(allocator),
+        .segments = try segments_list.toOwnedSlice(allocator),
+        .imports = try imports.toOwnedSlice(allocator),
+        .exports = try exports.toOwnedSlice(allocator),
+        .messages = try messages.toOwnedSlice(allocator),
         .debug_info_present = false,
     };
 

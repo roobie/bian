@@ -958,3 +958,83 @@ test ": Mach-O.amd64 analyze binary + pretty print" {
     try bundle.items[0].writePretty(&stderr_writer.interface);
     try stderr_writer.interface.flush();
 }
+
+// Decoders invariants tests — exercise only robust invariants so tests remain
+// useful as decoders evolve. These assert zero-copy backing buffer invariants,
+// basic structural consistency (sections/segments present), bounds checks, and
+// that pretty-printing succeeds.
+
+test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty print)" {
+    var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+
+    try expect(bundle.items.len >= 1);
+    const backing_len_u64 = @as(u64, bundle.backing_file.len);
+
+    for (bundle.items) |desc| {
+        try expect(desc.format == .elf);
+        try expect(desc.bitness == 64);
+        try expect(desc.arch != CpuArch.unknown);
+        try expect(desc.file_kind != FileKind.unknown);
+        try expect(desc.sections.len > 0);
+        try expect(desc.segments.len > 0);
+
+        // Sections/segments whose file_offset is non-zero should fit inside the
+        // backing file. Zero file_offset is allowed (e.g. BSS/common sections).
+        for (desc.sections) |s| {
+            if (s.file_offset != 0) try expect(s.file_offset + s.size <= backing_len_u64);
+        }
+        for (desc.segments) |seg| {
+            if (seg.file_offset != 0) try expect(seg.file_offset + seg.size <= backing_len_u64);
+        }
+
+        // Pretty-print must run without error and produce some output.
+        var out_buf: [8192]u8 = undefined;
+        var w = std.io.Writer.fixed(out_buf[0..]);
+        try desc.writePretty(&w);
+        try expect(w.end > 0);
+    }
+}
+
+test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imports/exports, pretty print)" {
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+
+    try expect(bundle.items.len >= 1);
+    const backing_len_u64 = @as(u64, bundle.backing_file.len);
+
+    for (bundle.items) |desc| {
+        try expect(desc.format == .macho);
+        try expect(desc.bitness == 64);
+        try expect(desc.arch != CpuArch.unknown);
+        try expect(desc.file_kind != FileKind.unknown);
+        try expect(desc.sections.len > 0);
+        try expect(desc.segments.len > 0);
+
+        for (desc.sections) |s| {
+            if (s.file_offset != 0) try expect(s.file_offset + s.size <= backing_len_u64);
+        }
+        for (desc.segments) |seg| {
+            if (seg.file_offset != 0) try expect(seg.file_offset + seg.size <= backing_len_u64);
+        }
+
+        // Imports and exports should contain valid non-empty names if present.
+        for (desc.imports) |imp| {
+            try expect(imp.len > 0);
+        }
+        for (desc.exports) |ex| {
+            try expect(ex.name.len > 0);
+        }
+
+        var out_buf: [8192]u8 = undefined;
+        var w = std.io.Writer.fixed(out_buf[0..]);
+        try desc.writePretty(&w);
+        try expect(w.end > 0);
+    }
+}

@@ -1,3 +1,7 @@
+# bian
+
+As for `chronicling` refer to [META.md](./chronicles/META.md).
+
 ## Cross-Platform Binary Inspector
 
 Main goals:

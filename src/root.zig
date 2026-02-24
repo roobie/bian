@@ -3,6 +3,7 @@ const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
 const elf = std.elf;
+const macho = std.macho;
 
 const expect = std.testing.expect;
 
@@ -143,8 +144,6 @@ const Message = struct {
 
 /// Unified description structure
 const BinaryDescription = struct {
-    // stage0: Stage0ParseResult,
-
     // === BASICS ===
     format: BinaryFileKind,
     os_abi: OsAbi,
@@ -168,11 +167,6 @@ const BinaryDescription = struct {
     exports: []Export,
 
     messages: []Message,
-
-    // Backing buffer containing the whole file. Section name slices point
-    // into this buffer (zero-copy). Callers must free this buffer via
-    // freeBinaryDescription when the description is no longer needed.
-    backing_file: []u8,
 
     debug_info_present: bool,
 
@@ -295,6 +289,29 @@ const BinaryDescription = struct {
         }
 
         try w.print("debug_info_present: {s}\n", .{if (self.debug_info_present) "yes" else "no"});
+    }
+};
+
+/// An owning container for one-or-more BinaryDescription items and the
+/// backing file buffer that all item slices point into (zero-copy).
+pub const BinaryBundle = struct {
+    items: []BinaryDescription,
+    backing_file: []u8,
+
+    pub fn free(allocator: std.mem.Allocator, self: BinaryBundle) void {
+        // Free per-description owned slices
+        for (self.items) |d| {
+            // Free top-level slices allocated with toOwnedSlice()
+            if (d.sections.len != 0) allocator.free(d.sections);
+            if (d.segments.len != 0) allocator.free(d.segments);
+            if (d.imports.len != 0) allocator.free(d.imports);
+            if (d.exports.len != 0) allocator.free(d.exports);
+            if (d.messages.len != 0) allocator.free(d.messages);
+        }
+        // Free the items slice itself
+        if (self.items.len != 0) allocator.free(self.items);
+        // Finally free the backing file buffer
+        if (self.backing_file.len != 0) allocator.free(self.backing_file);
     }
 };
 
@@ -423,8 +440,8 @@ test "pe.amd64" {
     try expect(presult.pe.machine == 0x8664);
 }
 
-/// Decodes an ELF file into a BinaryDescription using the provided hint.
-fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription {
+/// Decodes an ELF file into a BinaryBundle using the provided hint.
+fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     // 1) read whole file into an allocator-owned buffer (we keep this as
     //    the backing buffer so section name slices can point into it)
     const stat = try file.stat();
@@ -540,19 +557,29 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
         .imports = try imports.toOwnedSlice(allocator),
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
-        .backing_file = file_buf,
         .debug_info_present = false,
     };
 
-    // We are returning `file_buf` inside `desc.backing_file`. Prevent the
+    // Construct a bundle that owns the single description and the backing buffer
+    var bundle_list = try std.ArrayList(BinaryDescription).initCapacity(allocator, 0);
+    defer bundle_list.deinit(allocator);
+    try bundle_list.append(allocator, desc);
+    const items = try bundle_list.toOwnedSlice(allocator);
+
+    const bundle = BinaryBundle{
+        .items = items,
+        .backing_file = file_buf,
+    };
+
+    // We are returning `file_buf` inside the bundle.backing_file. Prevent the
     // deferred free from running.
     keep_backing = true;
-    return desc;
+    return bundle;
 }
 
 /// Frees resources owned by a BinaryDescription that were allocated using the
-/// provided allocator. Call this when you are finished using a description
-/// produced by decodeElf/analyzeBinary.
+/// provided allocator. Call this when you are finished using a single
+/// description's owned slices (but not the shared backing file).
 pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescription) void {
     // Free top-level slices allocated with toOwnedSlice()
     if (desc.sections.len != 0) allocator.free(desc.sections);
@@ -560,14 +587,11 @@ pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescripti
     if (desc.imports.len != 0) allocator.free(desc.imports);
     if (desc.exports.len != 0) allocator.free(desc.exports);
     if (desc.messages.len != 0) allocator.free(desc.messages);
-
-    // Free backing file buffer last
-    if (desc.backing_file.len != 0) allocator.free(desc.backing_file);
 }
 
-/// Analyzes a binary file and returns a unified BinaryDescription.
-/// Dispatches to format-specific decoders based on detected format.
-pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription {
+/// Analyzes a binary file and returns a BinaryBundle containing one or more
+/// BinaryDescription items (one per architecture slice for fat Mach-O).
+pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     var buf: [1024]u8 = @splat(0);
     // Read initial prefix for detection (reuse prefix_length)
     var reader = file.reader(buf[0..]);
@@ -589,14 +613,14 @@ test ": ELF basic parsing" {
     var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const desc = try analyzeBinary(allocator, file);
-    defer freeBinaryDescription(allocator, desc);
-    try expect(desc.format == .elf);
-    try expect(desc.arch == .x86_64); // Assuming test file
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items[0].format == .elf);
+    try expect(bundle.items[0].arch == .x86_64); // Assuming test file
     //std.debug.print("{}\n", .{desc});
     //
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    try desc.writePretty(&stderr_writer.interface);
+    try bundle.items[0].writePretty(&stderr_writer.interface);
     try stderr_writer.interface.flush();
 }

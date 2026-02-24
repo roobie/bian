@@ -1,0 +1,239 @@
+Session chronicle — 2026-02-24 00:21:00 +01:00
+
+Review of relevant prior work
+-----------------------------
+I reviewed the previous chronicle (chronicles/session-2026-02-23-233014.txt) to extract the patterns and lessons that matter for adding a Mach-O decoder. Key takeaways to carry forward:
+
+- Reader/Writer pitfalls: never copy an embedded std.Io.Reader / std.Io.Writer interface value; always pass the pointer to the embedded `.interface` and call methods like `readAlloc`, `fill`, `seekTo` and `flush` on it. Use `file.reader(buf)` and `reader.interface.readAlloc(...)` or `reader.interface.fill(...)`, then `try reader.seekTo(0)` if you need to rewind.
+
+- Zero-copy model is preferred: read the whole file into one allocator-owned buffer and return it in `BinaryDescription.backing_file`. All returned name/symbol/section slices should point into this buffer where possible. Provide / reuse `freeBinaryDescription(allocator, desc)` to free owned top-level slices and the backing buffer.
+
+- std.ArrayList usage (Zig 0.15.2): `try std.ArrayList(T).initCapacity(allocator, 0)`, `try l.append(allocator, item)`, `defer l.deinit(allocator)`, and `const s = try l.toOwnedSlice(allocator)` — remember to `allocator.free(s)` later. Use toOwnedSlice() to transfer ownership of lists to the caller.
+
+- Writer buffering: tests that use a fixed-size writer must call `.flush()` after `desc.writePretty(...)` or switch to `std.io.Writer.Allocating` for predictable test capture.
+
+- Stdlib helpers pattern: the ELF decoder used `std.elf.Header.read` and buffer-based iterators `header.iterateSectionHeadersBuffer(file_buf)` and `header.iterateProgramHeadersBuffer(file_buf)`. For Mach-O, stdlib provides `std.macho` helpers (types and a `LoadCommandIterator`) — reuse them where possible.
+
+Why Mach-O is different (format notes)
+-------------------------------------
+- Mach-O uses a mach_header/mach_header_64 followed by a sequence of load commands. The load commands include segment load commands (LC_SEGMENT[_64]) which contain sections, symtab command (LC_SYMTAB) for symbol and string tables, and multiple dyld-related commands (LC_LOAD_DYLIB, LC_DYLD_INFO, LC_DYLD_EXPORTS_TRIE, etc.).
+
+- Mach-O supports "fat" (universal) binaries with a fat_header and fat_arch entries that contain offsets/sizes for per-architecture Mach-O slices. Decide whether to handle fat by selecting one architecture slice or by returning multi-arch descriptions.
+
+- Section names (sectname/segname) are fixed-length 16-byte fields in section structs (zero-terminated/padded). The std.macho helper includes a `parseName` helper and `section_64.sectName()` which return slices into the file.
+
+- The entrypoint is provided by LC_MAIN (entry_point_command.entryoff) in modern binaries. To translate `entryoff` (file offset) into a virtual address you need the containing segment's vmaddr/fileoff mapping.
+
+- Dynamic binding and symbol exports can be encoded in several ways: plain SYMTAB (nlist/nlist_64 + strtab); dyld bind opcodes (LC_DYLD_INFO) and export trie (LC_DYLD_EXPORTS_TRIE). Implement a SYMTAB-first strategy for simplicity, and optionally parse the export trie / dyld info later.
+
+Plan: decodeMacho (minimal, phased)
+----------------------------------
+Goal: implement a `decodeMacho(allocator, file) !BinaryDescription` that mirrors decodeElf's behavior for Mach-O files. The function should be zero-copy (backing_file) and populate sections, segments, imports, exports, and a few security hints (PIE, stripped, NX where easy to detect). Start with a minimal, reliable subset and iterate.
+
+Phase 1 — Minimal useful decoder (MVP)
+
+1) Signature + safety:
+   - Match decodeElf's signature and behavior:
+     fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
+   - Read the whole file into an allocator-owned buffer `file_buf` and adopt the same keep_backing pattern used in decodeElf (defer free unless keep_backing = true). This makes zero-copy slices simple.
+   - Use `var fr = file.reader(file_buf); try fr.interface.fill(file_size);` (same pattern as decodeElf).
+
+2) Detect fat vs thin Mach-O and select the slice to decode:
+   - Read the first u32 (magic) with `mem.readInt(u32, file_buf[0..4], .big)` (same as `detectFormat`) to figure out whether it's a fat header or Mach-O and to determine bitness and endianness.
+   - If FAT_MAGIC / FAT_MAGIC_64, parse `fat_header` and `fat_arch` and pick a single arch slice for MVP. Strategy options:
+     * Prefer the first arch entry (simplest).
+     * Prefer an arch that matches current host (better UX). Use builtin.cpu.arch or a mapping.
+     * Record that file was multi-arch in desc.messages or a new field if desired.
+   - Set a `macho_buf` slice to the selected Mach-O slice (it will still point into the `file_buf` backing buffer).
+
+3) Parse the mach_header / mach_header_64 (careful with endianness & bitness):
+   - For MVP assume the common case: 64-bit little-endian. That allows safe pointer-casting via `@ptrCast` on slices returned by LoadCommandIterator helpers. (Document that big-endian/32-bit support is planned later.)
+   - Read `ncmds` and `sizeofcmds` (using `mem.readInt` with the detected endianness when not assuming native) and compute where the load commands live: `const lc_start = macho_buf[header_size .. header_size + sizeofcmds];`.
+
+4) Iterate load commands using std.macho.LoadCommandIterator:
+   - Instantiate LoadCommandIterator{ .ncmds = @intCast(usize, ncmds), .buffer = lc_start } and call `next()` repeatedly.
+   - For each `lc`:
+     - If `lc.hdr.cmd` is `LC.SEGMENT_64` (or SEGMENT for 32-bit), use `lc.getSections()` (provided helper) to obtain an array of `section_64` (or section) values and append section entries to `sections_list`. For section name use `sect.sectName()` / `section_64.sectName()` (helpers in std.macho) which return slices into `macho_buf`.
+     - For segment-level info use `lc.cast(segment_command_64)` to read `fileoff`/`filesize` and prot bits (`initprot`) to map permissions.
+     - If `lc.hdr.cmd` is `LC.SYMTAB`, cast `symtab_command` and record `symoff`, `nsyms`, `stroff`, `strsize` for later symbol parsing.
+     - If `lc.hdr.cmd` is one of the dylib/rpath/load commands (LC_LOAD_DYLIB, LC_RPATH, LC_LOAD_DYLINKER etc), use provided helpers like `lc.getDylibPathName()` and `lc.getRpathPathName()` to append to `imports` (runtime library dependencies).
+     - If `lc.hdr.cmd` is `LC.MAIN` (entry_point_command), capture `entryoff` and translate to virtual address using segment vmaddr/fileoff mapping (see below).
+
+5) Symbol parsing (SYMTAB-based imports/exports):
+   - If SYMTAB present: ensure stroff + strsize and symoff + nsyms are inside file_buf bounds.
+   - For 64-bit, use `@as`/`@ptrCast` to treat the `symoff` area as `nlist_64` array: `const syms = @as([*]const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];` (validate bounds first).
+   - For each symbol `sym`:
+     - Read string at `stroff + sym.n_strx` using `mem.sliceTo` to find nul-terminated name (zero-copy into backing_file).
+     - Use nlist_64 methods (in std.macho) like `sym.undf()`/`sym.ext()`/`sym.sect()` to classify symbols.
+     - If undefined external -> add to `imports` (name slice).
+     - If defined external -> add to `exports` (Export{ .name = name_slice, .kind = function/variable based on flags or heuristics }).
+   - If no SYMTAB present, mark `stripped = yes` or `unknown` appropriately.
+
+6) Entrypoint translation:
+   - If we found an `entryoff` (LC_MAIN), convert it to a virtual address by locating the segment that contains the file offset: if `seg.fileoff <= entryoff < seg.fileoff + seg.filesize`, then entry_va = seg.vmaddr + (entryoff - seg.fileoff). If no mapping found, store entrypoint as the file offset (or zero) and record a message.
+
+7) Security hints and properties:
+   - PIE: check `header.flags & MH_PIE`.
+   - NX: infer from stack/protections or `header.flags` (MH_ALLOW_STACK_EXECUTION clear suggests NX present). For MVP set to Unknown unless you can reliably infer.
+   - Stripped: if no SYMTAB or exported symbols, set `StrippedState.yes`.
+
+8) Build and return BinaryDescription:
+   - Use the same pattern as decodeElf: use ArrayList(Section) for sections and segments, ArrayList([]const u8) for imports, ArrayList(Export) for exports, messages, then `toOwnedSlice` for each and return `BinaryDescription{ .format = .macho, ... .backing_file = file_buf }` with `keep_backing = true`.
+
+9) Clean up and tests:
+   - Add a unit test similar to the ELF one that opens `testing/assets/MachO-OSX-x64-ls` and calls `analyzeBinary` (which should dispatch to decodeMacho) then asserts `desc.format == .macho`, `desc.bitness == 64`, and that `desc.arch == .x86_64` and maybe `desc.sections.len > 0`.
+   - Use an Allocating writer for pretty-print or ensure `stderr_writer.interface.flush()` is called after `desc.writePretty()`.
+
+Phase 2 — Robustness and features
+
+1) Support FAT/universal binaries more fully:
+   - Instead of picking the first arch, allow selecting a preferred arch or return a multi-arch representation. If returning a single BinaryDescription keep a message recording which arch slice was decoded.
+
+2) Endianness & 32-bit support:
+   - Implement parsing that honors the Mach-O endianness (MH_CIGAM and MH_CIGAM_64) by reading integers with mem.readInt using the file's endianness. Update uses of @ptrCast for struct arrays carefully (or perform explicit field-by-field reads and conversions).
+
+3) Export trie & binding info:
+   - Parse `LC_DYLD_EXPORTS_TRIE` and `LC_DYLD_INFO` (bind/rebase sections) to get a more accurate list of exported and imported symbols (and to implement lazy/weak imports correctly).
+
+4) Symbol classification improvements:
+   - Improve ExportKind detection (function vs variable) using section attributes (S_ATTR_PURE_INSTRUCTIONS or section.isCode()).
+
+5) Code signature / codesign parsing (LC_CODE_SIGNATURE):
+   - Detect signed binaries, code directory, and report presence/strength of code signature in messages.
+
+6) Tests & CI:
+   - Add unit tests for fat binaries, stripped binaries, and a test that checks imports contain dylib names.
+   - Add fuzz/resilience tests that pass truncated/malformed files to ensure robust bounds checks and clean error returns.
+
+Implementation hints / stdlib APIs to use
+---------------------------------------
+- Use `std.macho` types and helpers present in the stdlib: `mach_header`, `mach_header_64`, `fat_header`, `fat_arch`, `LoadCommandIterator`, `section_64`, `segment_command_64`, `symtab_command`, `nlist_64`, and helpers like `LoadCommand.getSections()` and `LoadCommand.getDylibPathName()`.
+
+- Keep the `file_buf` backing buffer and create `macho_buf` as a slice that points into `file_buf` (this preserves zero-copy while allowing you to focus parsing on the selected Mach-O slice).
+
+- For symbol strings use `mem.sliceTo(strtab_slice[start..], 0)` to find a NUL-terminated name. These slices point into `backing_file` and require no extra allocation.
+
+- Use `std.ArrayList` API exactly as used for decodeElf. When converting lists to owned slices call `toOwnedSlice(allocator)` and store the result in `desc`.
+
+- Reuse `freeBinaryDescription` to free sections, segments, exports/imports, messages, and `backing_file`.
+
+Edge cases & decisions to make (document now)
+---------------------------------------------
+- Fat/universal: pick first arch vs pick host arch vs multi-arch. Recommendation: prefer host arch if present, otherwise first arch. Record decision in messages.
+
+- Endianness: initially support little-endian 64-bit Mach-O (most common). Plan to add full endianness/32-bit support in phase 2.
+
+- Export accuracy: SYMTAB-only exports are a pragmatic starting point. The export trie is more correct; implement in a later iteration.
+
+Next actions (concrete)
+----------------------
+1) Add a new function stub `fn decodeMacho(...)` in src/root.zig and make `analyzeBinary` dispatch to it (replace the `UnsupportedVariant` branch for `.macho`).
+2) Implement Phase 1 steps in source; iterate until tests in `zig build test` pass. Focus on zero-copy and ArrayList lifetime semantics identical to decodeElf.
+3) Add tests for the basic Mach-O fixture (`testing/assets/MachO-OSX-x64-ls`) and ensure `desc.writePretty` output is flushed in the test.
+4) Iterate on Phase 2 features once Phase 1 is stable.
+
+Notes / references
+------------------
+- stdlib Mach-O helper file: $HOME/.local/share/mise/installs/zig/0.15.2/lib/std/macho.zig — it contains `LoadCommandIterator`, `section_64` helpers, `nlist_64` helpers, LC enums and constants.
+- Reuse the same defensive patterns established for decodeElf: don't copy `.interface`, free `toOwnedSlice()` results, use zero-copy backing buffer, and call `flush()` in tests using fixed-size writers.
+
+Planned chronicle status
+-----------------------
+This plan file records the design and phased implementation for a Mach-O decoder (`decodeMacho`) consistent with the previously implemented ELF decoder. After Phase 1 is implemented and tests pass, append a follow-up addendum documenting the exact code changes, panic/workarounds encountered (if any), memory/leak fixes, and any standard library nuances discovered while implementing Mach-O parsing.
+
+Addendum — 2026-02-24 00:25:00 +01:00
+-----------------------------------
+Proposal: change decoder APIs to return a collection of descriptions (multi-arch support)
+
+Rationale
+- Fat (universal) Mach-O binaries contain multiple architecture slices in a single file. Returning a single BinaryDescription forces choosing a slice or returning partial information. Returning an owned collection of BinaryDescription lets callers enumerate all architectures, keeps zero-copy sharing of a single backing buffer, and avoids losing information.
+
+Design decision (recommended)
+- Introduce a small owning container type that groups multiple descriptions and the shared backing buffer. Example name: `BinaryBundle` or `BinaryCollection`.
+
+    pub const BinaryBundle = struct {
+        items: []BinaryDescription, // owned slice of descriptions
+        backing_file: []u8,         // single allocator-owned buffer containing the whole file
+
+        pub fn free(self: *BinaryBundle, allocator: std.mem.Allocator) void {
+            // free per-description owned slices
+            for (self.items) |d| {
+                // free d.sections, d.segments, d.imports, d.exports, d.messages
+                if (d.sections.len != 0) allocator.free(d.sections);
+                if (d.segments.len != 0) allocator.free(d.segments);
+                if (d.imports.len != 0) allocator.free(d.imports);
+                if (d.exports.len != 0) allocator.free(d.exports);
+                if (d.messages.len != 0) allocator.free(d.messages);
+            }
+            if (self.items.len != 0) allocator.free(self.items);
+            if (self.backing_file.len != 0) allocator.free(self.backing_file);
+        }
+    };
+
+- Keep `BinaryDescription` but remove the `backing_file` field so an individual description does not own the buffer. Section and symbol name slices will still point into `BinaryBundle.backing_file`.
+
+API changes
+- Change `decodeElf`, `decodeMacho`, `analyzeBinary` signatures to return `BinaryBundle` instead of a single `BinaryDescription`.
+- For single-arch formats (ELF, PE) return a bundle with `items.len == 1`.
+- For fat Mach-O return a bundle with one `BinaryDescription` per architecture slice.
+
+Migration notes
+- Update callers/tests to handle `BinaryBundle`:
+    const bundle = try analyzeBinary(allocator, file);
+    defer bundle.free(allocator);
+    try expect(bundle.items.len >= 1);
+    const desc = bundle.items[0];
+    try desc.writePretty(&stderr_writer.interface);
+    try stderr_writer.interface.flush();
+
+- Update any existing `freeBinaryDescription` uses to call `bundle.free(allocator)`; you may keep a helper `freeBinaryDescription` that frees only per-description owned slices if desired.
+
+Implementation steps (practical)
+1) Add `BinaryBundle` type near `BinaryDescription` definition and remove `backing_file` from `BinaryDescription`.
+2) Update `freeBinaryDescription` to only free per-description slices (sections, segments, imports, exports, messages), and add `pub fn freeBinaryBundle(allocator, b: BinaryBundle)` or `pub fn (b: *BinaryBundle) free(allocator)` as above.
+3) Update `decodeElf` to construct a single-element bundle rather than returning `BinaryDescription`.
+4) Implement `decodeMacho` to return a bundle with one or more descriptions (for fat binaries return multiple items) and reuse `file_buf` as `backing_file`.
+5) Update `analyzeBinary` to return a `BinaryBundle` and to dispatch to decoders accordingly.
+6) Update tests to expect bundles and to free them properly.
+
+Notes / caveats
+- `BinaryDescription.writePretty` does not need the backing buffer because it prints name slices that reference the shared backing buffer; the buffer must remain alive while `writePretty` is called.
+- Keep zero-copy invariants: never free the backing buffer until all `BinaryDescription` slices that reference it are no longer used.
+- This approach avoids duplicating the backing buffer per-architecture and keeps deallocation simple and explicit.
+
+Next decision
+- If you like this design I can implement it now (update types, modify decodeElf to return a bundle, add decodeMacho with fat support returning multi-arch bundle, update analyzeBinary & tests) and run `zig build test`. Otherwise I can implement only `decodeMacho` returning multiple BinaryDescription in-place (but that will require careful ownership flags to avoid double-freeing the shared buffer).
+
+Addendum — 2026-02-24 00:30:00 +01:00
+-----------------------------------
+Implementation: BinaryBundle + decodeElf -> BinaryBundle
+
+What I changed
+- Introduced `pub const BinaryBundle` (items: []BinaryDescription, backing_file: []u8) and added `BinaryBundle.free(allocator, bundle)` which:
+  - frees per-description owned slices (sections, segments, imports, exports, messages),
+  - frees the `items` slice itself,
+  - frees the `backing_file` last.
+
+- Removed the `backing_file` field from `BinaryDescription`. Descriptions are now lightweight views whose name/symbol slices point into the bundle's backing buffer.
+
+- Updated `decodeElf` to return a `BinaryBundle` instead of a single `BinaryDescription`. Implementation details:
+  - Read the entire file into an allocator-owned `file_buf` (zero-copy backing buffer).
+  - Parse headers and collect sections/segments/imports/exports into owned slices using `std.ArrayList(...).toOwnedSlice(allocator)`.
+  - Construct a `BinaryDescription` value whose slices point into `file_buf`.
+  - Append it to a temporary ArrayList(BinaryDescription), call `toOwnedSlice(allocator)` to get the owned `items` slice, and return a `BinaryBundle{ .items = items, .backing_file = file_buf }` while preventing the deferred free of `file_buf`.
+
+- Kept `freeBinaryDescription(allocator, desc)` as a helper that frees only per-description owned slices (does not free any backing file). This is useful when callers manage backing buffers separately.
+
+- Updated `analyzeBinary` to return `BinaryBundle` and adjusted the ELF test to use a `BinaryBundle` (defer BinaryBundle.free) and to access `bundle.items[0]` for assertions and pretty-print.
+
+Test run
+- Ran `zig build test`. The tests executed and printed pretty output for the ELF fixture. Example output included sections/segments and other summary lines. The run completed without dereferenced panic and the tests that exercise analyzeBinary now defer BinaryBundle.free, so there were no leaks.
+
+Notes / follow-ups
+- Next step: implement `decodeMacho` to return a `BinaryBundle` (one item per Mach-O slice for fat binaries). The plan already in this chronicle describes the phased approach: start with 64-bit LE thin and expand to fat/multi-arch, endianness, export trie parsing, and code-signature detection.
+
+- Update other callers (outside tests) that might have depended on `analyzeBinary` returning a single BinaryDescription. They must be updated to accept a bundle and index into `bundle.items` or iterate.
+
+- Consider adding a convenience accessor for single-arch callers, e.g. `pub fn single(self: BinaryBundle) ?*const BinaryDescription` which returns the first item if present (or null otherwise). This can make migration less noisy in call sites that only expect one architecture.
+
+End of addendum

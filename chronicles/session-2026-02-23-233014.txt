@@ -6,7 +6,7 @@ Interactive session to leverage Zig stdlib ELF parsing from src/root.zig, implem
 
 Key actions performed
 ---------------------
-1. Read stdlib ELF implementation: /home/jani/.local/share/mise/installs/zig/0.15.2/lib/std/elf.zig to learn about Header.read, iterateProgramHeadersBuffer, iterateSectionHeadersBuffer, constants and types.
+1. Read stdlib ELF implementation: $HOME/.local/share/mise/installs/zig/0.15.2/lib/std/elf.zig to learn about Header.read, iterateProgramHeadersBuffer, iterateSectionHeadersBuffer, constants and types.
 
 2. Implemented decodeElf in src/root.zig to:
    - read whole file into an allocator-owned buffer
@@ -105,9 +105,9 @@ This addendum records the concrete runtime failure I hit when running the tests,
    - Symptom: test runner crashed with a panic: "switch on corrupt value" coming from std/fs/File.zig when analyzeBinary called readAlloc on a copied Reader interface.
    - Short stack trace (abbreviated):
        thread ... panic: switch on corrupt value
-       /.../lib/std/fs/File.zig:1344:17: in readVec
-       /.../lib/std/Io/Reader.zig:372:37: in readVec
-       /.../lib/std/Io/Reader.zig:685:21: in readAlloc
+       $HOME/.local/share/mise/installs/zig/0.15.2/lib/std/fs/File.zig:1344:17: in readVec
+       $HOME/.local/share/mise/installs/zig/0.15.2/lib/std/Io/Reader.zig:372:37: in readVec
+       $HOME/.local/share/mise/installs/zig/0.15.2/lib/std/Io/Reader.zig:685:21: in readAlloc
        src/root.zig:433:45: in analyzeBinary
 
    - Root cause: analyzeBinary copied the Reader.interface value out of the fs.File.Reader into a standalone local (var file_reader = reader.interface) and then invoked methods on that copy. std.io.Reader implementations rely on computing the parent object via @fieldParentPtr("interface", io_reader). Using an independent interface object made @fieldParentPtr compute an invalid parent pointer, leading to the corrupt-value panic.
@@ -185,7 +185,7 @@ This addendum records the concrete runtime failure I hit when running the tests,
 
 5) Final test results
    - After applying the analyzeBinary fix and the leak fixes, I ran `zig build test` until no leaks/crashes remained.
-   - Final run: tests executed and completed; the repo's test output prints the working directory (CWD: /home/jani/devel/bian) and there were no crashes or leak failures. The helper test that exercised analyzeBinary now defers freeBinaryDescription(allocator, desc) and therefore does not leak.
+   - Final run: tests executed and completed; the repo's test output prints the working directory (CWD: $HOME/devel/bian) and there were no crashes or leak failures. The helper test that exercised analyzeBinary now defers freeBinaryDescription(allocator, desc) and therefore does not leak.
 
 6) Recommendations / next steps
    - Consider switching to a zero-copy name model: store file_buf (the whole file backing buffer) inside BinaryDescription as `backing_file: []const u8` and point Section.name at slices into backing_file. That eliminates per-name allocations and simplifies deallocation (only one buffer to free).
@@ -291,6 +291,62 @@ This final addendum records the addition of a pretty-printer method and a small 
 4) Notes and next steps
    - The pretty-printer is intentionally simple; if you want formatted columns, hex width padding, or localized output, we can extend it.
    - Consider adding unit tests that assert specific pretty-printer lines using `std.io.Writer.Allocating`.
+
+
+Stdlib — good-to-know (skimming notes)
+-------------------------------------
+These are concise, practical takeaways from skimming the Zig 0.15.2 standard library sources (not exhaustive, but things that mattered while implementing decodeElf and related helpers):
+
+- Reader/Writer design and interface field
+  - Many concrete reader/writer types (e.g. `std.fs.File.Reader`, `std.io.Writer.Allocating`) embed a smaller `std.Io.Reader` / `std.Io.Writer` "interface" struct.
+  - Internals often use `@fieldParentPtr("interface", io_reader)` to compute the parent object. That means you must pass a pointer to the actual embedded interface (e.g. `&file_reader.interface`) — passing a copy or a standalone `std.Io.Reader` breaks `@fieldParentPtr` and leads to panics.
+  - Do not mutate interface internals (seek/end) directly from user code; use the provided methods (seekTo, seekBy, flush, etc.).
+
+- fs.File.Reader specifics
+  - `file.reader(buffer)` returns an fs.File.Reader initialized to use `buffer` as an internal buffer. Use `reader.interface.readAlloc` or other interface methods to read data; call `reader.seekTo(0)` to reset.
+  - The reader supports multiple modes (positional vs streaming). Some operations convert modes; be aware of errors like `Unseekable`/`Streaming`.
+
+- std.elf helpers
+  - `elf.Header.read(r: *std.Io.Reader)` parses the ELF header using peek/takeStruct and returns a typed Header (handles 32/64-bit + endianness).
+  - Prefer the buffer-based iterators when you already have the file in memory: `header.iterateSectionHeadersBuffer(buf)` and `header.iterateProgramHeadersBuffer(buf)` — they construct small fixed readers internally and call `takeStruct`.
+  - The elf module exposes many constants (PT_*, SHT_*, DT_*, SHF_*, PF_*, EM_*, ET_*, etc.) which you can match against rather than re-defining values.
+
+- peek / takeStruct / fixed readers
+  - `std.Io.Reader.fixed(buffer)` produces a Reader over a buffer. `Header.read` uses `r.peek` and then `r.takeStruct(Type, endian)` to parse struct values with the correct endianness.
+  - When you have an in-memory buffer, `std.io.Reader.fixed(buf)` + `takeStruct` is a simple pattern for parsing typed headers.
+
+- ArrayList and allocation patterns
+  - Current std (0.15.2) pattern: `var l = try std.ArrayList(T).initCapacity(allocator, 0); defer l.deinit(allocator);` then `try l.append(allocator, item);` and `const slice = try l.toOwnedSlice(allocator);` — the returned `slice` must later be freed with `allocator.free(slice)`.
+  - `std.array_list.Managed(T).init(allocator)` is an older alias that exists but prefer the explicit `initCapacity`/`deinit(allocator)`/`toOwnedSlice(allocator)` for forward compatibility.
+  - `toOwnedSlice` allocates aligned memory using the allocator with the element alignment; freeing is standard `allocator.free(slice)`.
+
+- Writer buffering and Allocating writer
+  - `std.io.Writer` backed by a fixed buffer (e.g. File.stdout().writer(&buf)) will keep unwritten bytes in its internal buffer; call `flush()` to ensure the underlying sink receives them.
+  - For tests and capturing output, use `std.io.Writer.Allocating` (or `Allocating.init`) to collect an unbounded output buffer and then call `.written()` to obtain the data. It's simpler and safer than manually sizing a fixed buffer.
+
+- Error sets and composition
+  - Stdlib often composes multiple error sets with `||`, e.g. `pub const ReadError = std.Io.Reader.Error || error{InvalidElfMagic, ...};` — be prepared to handle or propagate combined error sets.
+
+- Rebase / readVec semantics
+  - `Reader` provides `peek`, `stream`, `readVec`, `rebase`, and `discard` primitives. The default `readVec` implementation uses the `Reader.buffer` and falls back to the vtable's `stream` implementation when needed. Many stdlib components rely on these semantics — don't bypass them by manually tinkering with buffer indices.
+
+- Performance patterns
+  - Use `std.Io.Writer.Allocating` + `toArrayList` patterns when you need to efficiently accumulate bytes with few reallocs.
+  - The stdlib often favors passing an allocator explicitly to allocation/deinit operations (defensive ownership).
+
+- Misc small gotchas
+  - `@fieldParentPtr` is used extensively; it's fragile if the pointer you pass does not actually point into a parent struct where the field lives.
+  - `readAlloc(allocator, n)` may return `error.EndOfStream` or other Reader errors; check semantics when you rely on its length.
+  - Use `seekTo`/`seekBy` instead of setting `reader.interface.seek = 0`.
+
+Recommendations (derived from stdlib patterns)
+--------------------------------------------
+- Prefer zero-copy parsing where safe (keep a backing_file and return slices into it) for performance and simplicity. When you do, add a clear deallocator (`freeBinaryDescription`) and document ownership.
+- Use `std.io.Writer.Allocating` for tests that need to inspect formatted output.
+- Always free `toOwnedSlice` results — the caller owns them.
+- When calling low-level stdlib functions that accept `*std.Io.Reader` or `*std.Io.Writer`, ensure you pass the correct pointer to the embedded interface, not a copy.
+
+End of added stdlib notes
 
 End of chronicle (final)
 ------------------------

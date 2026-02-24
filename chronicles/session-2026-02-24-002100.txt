@@ -34,7 +34,7 @@ Phase 1 — Minimal useful decoder (MVP)
 
 1) Signature + safety:
    - Match decodeElf's signature and behavior:
-     fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryDescription
+     fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle
    - Read the whole file into an allocator-owned buffer `file_buf` and adopt the same keep_backing pattern used in decodeElf (defer free unless keep_backing = true). This makes zero-copy slices simple.
    - Use `var fr = file.reader(file_buf); try fr.interface.fill(file_size);` (same pattern as decodeElf).
 
@@ -42,7 +42,7 @@ Phase 1 — Minimal useful decoder (MVP)
    - Read the first u32 (magic) with `mem.readInt(u32, file_buf[0..4], .big)` (same as `detectFormat`) to figure out whether it's a fat header or Mach-O and to determine bitness and endianness.
    - If FAT_MAGIC / FAT_MAGIC_64, parse `fat_header` and `fat_arch` and pick a single arch slice for MVP. Strategy options:
      * Prefer the first arch entry (simplest).
-     * Prefer an arch that matches current host (better UX). Use builtin.cpu.arch or a mapping.
+     * Prefer an arch that matches current host (better UX). Use builtin.target.cpu.arch or a mapping.
      * Record that file was multi-arch in desc.messages or a new field if desired.
    - Set a `macho_buf` slice to the selected Mach-O slice (it will still point into the `file_buf` backing buffer).
 
@@ -51,9 +51,9 @@ Phase 1 — Minimal useful decoder (MVP)
    - Read `ncmds` and `sizeofcmds` (using `mem.readInt` with the detected endianness when not assuming native) and compute where the load commands live: `const lc_start = macho_buf[header_size .. header_size + sizeofcmds];`.
 
 4) Iterate load commands using std.macho.LoadCommandIterator:
-   - Instantiate LoadCommandIterator{ .ncmds = @intCast(usize, ncmds), .buffer = lc_start } and call `next()` repeatedly.
+   - Instantiate LoadCommandIterator with a temporary local then set `.ncmds` and `.buffer` (don't try to initialize inline if the slice expression confuses the compiler) and call `next()` repeatedly.
    - For each `lc`:
-     - If `lc.hdr.cmd` is `LC.SEGMENT_64` (or SEGMENT for 32-bit), use `lc.getSections()` (provided helper) to obtain an array of `section_64` (or section) values and append section entries to `sections_list`. For section name use `sect.sectName()` / `section_64.sectName()` (helpers in std.macho) which return slices into `macho_buf`.
+     - If `lc.hdr.cmd` is `LC.SEGMENT_64` (or SEGMENT for 32-bit), use `lc.getSections()` (provided helper) to obtain an array of `section_64` values and append section entries to `sections_list`. For section name use `sect.sectName()` / `section_64.sectName()` (helpers in std.macho) which return slices into `macho_buf`.
      - For segment-level info use `lc.cast(segment_command_64)` to read `fileoff`/`filesize` and prot bits (`initprot`) to map permissions.
      - If `lc.hdr.cmd` is `LC.SYMTAB`, cast `symtab_command` and record `symoff`, `nsyms`, `stroff`, `strsize` for later symbol parsing.
      - If `lc.hdr.cmd` is one of the dylib/rpath/load commands (LC_LOAD_DYLIB, LC_RPATH, LC_LOAD_DYLINKER etc), use provided helpers like `lc.getDylibPathName()` and `lc.getRpathPathName()` to append to `imports` (runtime library dependencies).
@@ -63,7 +63,7 @@ Phase 1 — Minimal useful decoder (MVP)
    - If SYMTAB present: ensure stroff + strsize and symoff + nsyms are inside file_buf bounds.
    - For 64-bit, use `@as`/`@ptrCast` to treat the `symoff` area as `nlist_64` array: `const syms = @as([*]const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];` (validate bounds first).
    - For each symbol `sym`:
-     - Read string at `stroff + sym.n_strx` using `mem.sliceTo` to find nul-terminated name (zero-copy into backing_file).
+     - Read string at `stroff + sym.n_strx` using `mem.sliceTo` to find a NUL-terminated name (zero-copy into backing_file).
      - Use nlist_64 methods (in std.macho) like `sym.undf()`/`sym.ext()`/`sym.sect()` to classify symbols.
      - If undefined external -> add to `imports` (name slice).
      - If defined external -> add to `exports` (Export{ .name = name_slice, .kind = function/variable based on flags or heuristics }).
@@ -78,14 +78,14 @@ Phase 1 — Minimal useful decoder (MVP)
    - Stripped: if no SYMTAB or exported symbols, set `StrippedState.yes`.
 
 8) Build and return BinaryDescription:
-   - Use the same pattern as decodeElf: use ArrayList(Section) for sections and segments, ArrayList([]const u8) for imports, ArrayList(Export) for exports, messages, then `toOwnedSlice` for each and return `BinaryDescription{ .format = .macho, ... .backing_file = file_buf }` with `keep_backing = true`.
+   - Use the same pattern as decodeElf: use ArrayList(Section) for sections and segments, ArrayList([]const u8) for imports, ArrayList(Export) for exports, messages, then `toOwnedSlice` for each and return `BinaryDescription{ .format = .macho, ... }` wrapped in a `BinaryBundle` owning the backing buffer.
 
 9) Clean up and tests:
    - Add a unit test similar to the ELF one that opens `testing/assets/MachO-OSX-x64-ls` and calls `analyzeBinary` (which should dispatch to decodeMacho) then asserts `desc.format == .macho`, `desc.bitness == 64`, and that `desc.arch == .x86_64` and maybe `desc.sections.len > 0`.
    - Use an Allocating writer for pretty-print or ensure `stderr_writer.interface.flush()` is called after `desc.writePretty()`.
 
 Phase 2 — Robustness and features
-
+--------------------------------
 1) Support FAT/universal binaries more fully:
    - Instead of picking the first arch, allow selecting a preferred arch or return a multi-arch representation. If returning a single BinaryDescription keep a message recording which arch slice was decoded.
 
@@ -155,7 +155,7 @@ Design decision (recommended)
         items: []BinaryDescription, // owned slice of descriptions
         backing_file: []u8,         // single allocator-owned buffer containing the whole file
 
-        pub fn free(self: *BinaryBundle, allocator: std.mem.Allocator) void {
+        pub fn free(allocator: std.mem.Allocator, self: BinaryBundle) void {
             // free per-description owned slices
             for (self.items) |d| {
                 // free d.sections, d.segments, d.imports, d.exports, d.messages
@@ -235,5 +235,61 @@ Notes / follow-ups
 - Update other callers (outside tests) that might have depended on `analyzeBinary` returning a single BinaryDescription. They must be updated to accept a bundle and index into `bundle.items` or iterate.
 
 - Consider adding a convenience accessor for single-arch callers, e.g. `pub fn single(self: BinaryBundle) ?*const BinaryDescription` which returns the first item if present (or null otherwise). This can make migration less noisy in call sites that only expect one architecture.
+
+Addendum — 2026-02-24 00:36:00 +01:00
+-----------------------------------
+Lessons learned & decisions made (coding session notes)
+
+1) Critical runtime pitfall: do not copy `.interface` values
+   - Symptom: copying `Reader.interface` or similar embedded interface values led to a runtime panic ("switch on corrupt value") originating in `std/fs/File.zig`.
+   - Lesson: always use the live reader/writer returned by `file.reader(buf)` and call methods on `reader.interface`. If you need to rewind, call `try reader.seekTo(0)`. Avoid storing or copying the interface value across scopes.
+
+2) mem.readInt is picky about its buffer parameter
+   - Symptom: attempts to call `mem.readInt(T, some_slice, endian)` with a runtime slice or with a pointer expression produced compile errors about expected types.
+   - Lesson: `mem.readInt` expects a pointer to a fixed-size array type (e.g. `*const [4]u8` for a 32-bit read). For runtime offsets prefer one of:
+     * Manually assemble the integer from bytes with explicit shifts (portable and clear), or
+     * Use `@ptrCast`/`@alignCast` to a pointer to `[4]u8` only when you can assert appropriate bounds and alignment at compile time.
+   - Decision: prefer manual byte assembly for runtime offsets to avoid subtle compile-time/type issues.
+
+3) Enum/comptime inference traps
+   - Symptom: writing `const fat_endian = if (magic == ...) .little else .big;` produced a compile-time-only type error since the enum literal inference made the value comptime-only.
+   - Lesson: when an expression's type should be the runtime enum value, annotate it: `const fat_endian: Endian = if (...) Endian.little else Endian.big;` This avoids the compiler interpreting it as a comptime-only enum literal.
+
+4) LoadCommandIterator initialization
+   - Symptom: initializing `LoadCommandIterator` inline with slice expressions caused compile errors (argument/initializer arity confusion).
+   - Decision: construct the iterator as an `undefined` local and assign fields explicitly:
+       var lc_it: macho.LoadCommandIterator = undefined;
+       lc_it.ncmds = @as(usize, hdr.ncmds);
+       lc_it.buffer = lc_buffer;
+     This avoids initializer parsing pitfalls and is clearer.
+
+5) Alignment and std.macho helpers
+   - Symptom: std.macho helpers sometimes expect richer alignment than the buffers provide (e.g. `section_64.sectName` expects a `*const section_64` with natural alignment while `getSections` returns `[]align(1) const section_64`). Directly passing `&secs[i]` could yield alignment complaints.
+   - Lesson/Decision: when alignment issues appear, either:
+     * Use `@alignCast` where safe and sensible, or
+     * Copy the small struct value into a local `const sect_val = secs[i];` and pass `&sect_val` to the helper. Copying into a properly-aligned local is simple, robust, and avoids undefined behavior.
+
+6) Pointer casting for symbol arrays
+   - Symptom: casting a `[]const u8` pointer into `[ * ]const macho.nlist_64` triggers alignment checks.
+   - Lesson: use `@as([*]align(1) const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms]` or otherwise ensure pointer alignment with `@alignCast` or by copying into aligned storage. I used the `align(1)` variant in the implementation to match the stdlib iterator helper patterns and avoid alignment errors.
+
+7) Host-arch detection
+   - Decision: use `const builtin = @import("builtin");` and `builtin.target.cpu.arch` to detect the compilation host arch; map that to `macho.CPU_TYPE_*` constants when preferring a fat slice matching the host.
+   - Note: be careful with signedness/width when comparing values read from file headers; keep host CPU constants and the read values in compatible integer widths and use explicit casts (`@as`/`@intCast`) only when safe.
+
+8) Tests must flush writers
+   - Lesson: any test that captures pretty-printed output with a fixed-size writer must call `.flush()` on the writer's interface to ensure all bytes are written into the buffer before the test inspects it. Alternatively, use `std.io.Writer.Allocating` to avoid manual flushing.
+
+9) Ownership policy and API decision
+   - Decision: adopt `BinaryBundle` as the single owner of the backing file buffer and the slice of `BinaryDescription` items. `BinaryDescription` becomes a lightweight view. Provide `BinaryBundle.free(allocator, bundle)` that frees per-description slices, the items slice, and the backing buffer.
+   - Rationale: zero-copy slices into a single backing buffer are much simpler if a single owner (bundle) manages the backing buffer. It also enables multi-arch returns for fat Mach-O without duplicating buffer contents.
+
+10) Conservative defaults & errors
+   - Decision: in Phase 1, return `error.UnsupportedVariant` for binaries that are not 64-bit little-endian Mach-O (or for endianness/bitness combos we do not yet handle). Prefer conservative errors over attempting risky, untested parsing.
+
+Actionable follow-ups
+- Harden bounds/overflow checks around header-counts and offsets (phoff/shoff/size fields) for both ELF and Mach-O.
+- Expand Mach-O support (export trie, bind/rebase parsing, multi-arch bundle, entry offset -> VA translation using segment mappings).
+- Add unit tests for Mach-O thin and fat fixtures, and add negative tests for malformed/truncated inputs.
 
 End of addendum

@@ -1,5 +1,7 @@
 Session chronicle — 2026-02-24 21:59:48 +01:00
 
+Related quick log: chronicles/quicklog-2026-02-24-220000.md
+
 Context / goal
 --------------
 Continue Phase 2 work on Mach-O decoding: extend the baseline decoder so it handles the common Mach-O variants (thin 64-bit little-endian), add FAT/universal support (multi-arch slices), and make the decoder robust and zero-copy like the ELF decoder. Fix the compile/runtime errors that appeared during the edits and record lessons and decisions for future work.

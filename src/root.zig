@@ -610,77 +610,9 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBun
     }
 }
 
-/// Decodes a Mach-O file (thin or fat) into a BinaryBundle.
-fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
-    // Read whole file into backing buffer
-    const stat = try file.stat();
-    const file_size = @as(usize, stat.size);
-    var file_buf = try allocator.alloc(u8, file_size);
-    var keep_backing: bool = false;
-    defer if (!keep_backing) allocator.free(file_buf);
 
-    var fr = file.reader(file_buf);
-    try fr.interface.fill(file_size);
-
-    // Detect fat vs thin and pick a macho slice (macho_buf points into file_buf)
-    const magic = mem.readInt(u32, file_buf[0..4], .big);
-    var macho_buf: []const u8 = file_buf;
-
-    if (magic == macho.FAT_MAGIC or magic == macho.FAT_CIGAM or magic == macho.FAT_MAGIC_64 or magic == macho.FAT_CIGAM_64) {
-        const fat_endian: Endian = if (magic == macho.FAT_CIGAM or magic == macho.FAT_CIGAM_64) Endian.little else Endian.big;
-        if (file_buf.len < @sizeOf(macho.fat_header)) return ParseError.TooSmall;
-        const nfat = @as(usize, mem.readInt(u32, file_buf[4..8], fat_endian));
-        if (nfat == 0) return ParseError.Malformed;
-        const arch_off = @sizeOf(macho.fat_header);
-        const arch_size = @sizeOf(macho.fat_arch);
-        if (file_buf.len < arch_off + nfat * arch_size) return ParseError.TooSmall;
-
-        // Prefer host arch if present
-        var chosen_index: usize = 0;
-        const host_arch = builtin.target.cpu.arch;
-        var host_cpu: i64 = 0;
-        if (host_arch == std.Target.Cpu.Arch.x86_64) {
-            host_cpu = @as(i64, macho.CPU_TYPE_X86_64);
-        } else if (host_arch == std.Target.Cpu.Arch.aarch64) {
-            host_cpu = @as(i64, macho.CPU_TYPE_ARM64);
-        }
-        if (host_cpu != 0) {
-            var i: usize = 0;
-            while (i < nfat) : (i += 1) {
-                const off = arch_off + i * arch_size;
-                const b0 = @as(u32, file_buf[off]);
-                const b1 = @as(u32, file_buf[off + 1]);
-                const b2 = @as(u32, file_buf[off + 2]);
-                const b3 = @as(u32, file_buf[off + 3]);
-                const u = if (fat_endian == Endian.big) (b0 << 24) | (b1 << 16) | (b2 << 8) | b3 else (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
-                const cputype = @as(i64, u);
-                if (cputype == host_cpu) {
-                    chosen_index = i;
-                    break;
-                }
-            }
-        }
-
-        const chosen_off_field = arch_off + chosen_index * arch_size + 8; // offset field within fat_arch
-        const chosen_size_field = arch_off + chosen_index * arch_size + 12; // size field
-        const off0 = @as(u32, file_buf[chosen_off_field]);
-        const off1 = @as(u32, file_buf[chosen_off_field + 1]);
-        const off2 = @as(u32, file_buf[chosen_off_field + 2]);
-        const off3 = @as(u32, file_buf[chosen_off_field + 3]);
-        const off32 = @as(usize, if (fat_endian == Endian.big) (off0 << 24) | (off1 << 16) | (off2 << 8) | off3 else (off3 << 24) | (off2 << 16) | (off1 << 8) | off0);
-        const sz0 = @as(u32, file_buf[chosen_size_field]);
-        const sz1 = @as(u32, file_buf[chosen_size_field + 1]);
-        const sz2 = @as(u32, file_buf[chosen_size_field + 2]);
-        const sz3 = @as(u32, file_buf[chosen_size_field + 3]);
-        const sz32 = @as(usize, if (fat_endian == Endian.big) (sz0 << 24) | (sz1 << 16) | (sz2 << 8) | sz3 else (sz3 << 24) | (sz2 << 16) | (sz1 << 8) | sz0);
-        if (off32 + sz32 <= file_buf.len) {
-            macho_buf = file_buf[off32 .. off32 + sz32];
-        } else {
-            return ParseError.Malformed;
-        }
-    }
-
-    // Detect Mach-O magic and basic properties (baseline: support 64-bit LE)
+/// Decode a single Mach-O slice (must be little-endian for the std.macho helpers)
+fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !BinaryDescription {
     if (macho_buf.len < 4) return ParseError.TooSmall;
     const mm = mem.readInt(u32, macho_buf[0..4], .big);
     var is_64: bool = false;
@@ -699,22 +631,43 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         m_endian = Endian.little;
     } else return ParseError.InvalidHeader;
 
-    // Baseline implementation: only handle 64-bit little-endian for now
-    if (!is_64) return error.UnsupportedVariant;
+    // We currently rely on std.macho helpers which assume native (little) endianness.
     if (m_endian != .little) return error.UnsupportedVariant;
 
-    if (macho_buf.len < @sizeOf(macho.mach_header_64)) return ParseError.TooSmall;
-    const hdr_ptr = @as(*align(1) const macho.mach_header_64, @ptrCast(macho_buf.ptr));
-    const hdr = hdr_ptr.*;
+    // Header parsing
+    var hdr_size: usize = 0;
+    var ncmds: usize = 0;
+    var sizeofcmds: usize = 0;
+    var hdr_cputype: macho.cpu_type_t = 0;
+    var hdr_filetype: u32 = 0;
+    var hdr_flags: u32 = 0;
 
-    const hdr_size = @sizeOf(macho.mach_header_64);
-    const sizeofcmds = @as(usize, hdr.sizeofcmds);
+    if (is_64) {
+        if (macho_buf.len < @sizeOf(macho.mach_header_64)) return ParseError.TooSmall;
+        const hdr_ptr = @as(*align(1) const macho.mach_header_64, @ptrCast(macho_buf.ptr));
+        const hdr = hdr_ptr.*;
+        hdr_size = @sizeOf(macho.mach_header_64);
+        ncmds = @as(usize, hdr.ncmds);
+        sizeofcmds = @as(usize, hdr.sizeofcmds);
+        hdr_cputype = hdr.cputype;
+        hdr_filetype = hdr.filetype;
+        hdr_flags = hdr.flags;
+    } else {
+        if (macho_buf.len < @sizeOf(macho.mach_header)) return ParseError.TooSmall;
+        const hdr_ptr = @as(*align(1) const macho.mach_header, @ptrCast(macho_buf.ptr));
+        const hdr = hdr_ptr.*;
+        hdr_size = @sizeOf(macho.mach_header);
+        ncmds = @as(usize, hdr.ncmds);
+        sizeofcmds = @as(usize, hdr.sizeofcmds);
+        hdr_cputype = hdr.cputype;
+        hdr_filetype = hdr.filetype;
+        hdr_flags = hdr.flags;
+    }
+
     if (hdr_size + sizeofcmds > macho_buf.len) return ParseError.Malformed;
-
     const lc_buffer = macho_buf[hdr_size .. hdr_size + sizeofcmds];
-    var lc_it: macho.LoadCommandIterator = undefined;
-    lc_it.ncmds = @as(usize, hdr.ncmds);
-    lc_it.buffer = lc_buffer;
+
+    var lc_it: macho.LoadCommandIterator = .{ .ncmds = ncmds, .buffer = lc_buffer, .index = 0 };
 
     var sections_list = try std.ArrayList(Section).initCapacity(allocator, 0);
     defer sections_list.deinit(allocator);
@@ -727,6 +680,12 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     var messages = try std.ArrayList(Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
 
+    // Keep a mapping of segments (fileoff, filesize -> vmaddr) so we can translate
+    // LC_MAIN.entryoff (file offset) -> virtual address
+    const SegmentMap = struct { fileoff: u64, filesize: u64, vmaddr: u64 };
+    var segmaps = try std.ArrayList(SegmentMap).initCapacity(allocator, 0);
+    defer segmaps.deinit(allocator);
+
     var symoff: usize = 0;
     var nsyms: usize = 0;
     var stroff: usize = 0;
@@ -737,38 +696,55 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     while (true) {
         const lc = lc_it.next() orelse break;
         const cmd = lc.hdr.cmd;
-        if (cmd == macho.LC.SEGMENT_64) {
-            // segment-level info
-            const seg_ptr = @as(*align(1) const macho.segment_command_64, @ptrCast(lc.data.ptr));
-            const seg_fileoff = @as(u64, seg_ptr.fileoff);
-            const seg_filesize = seg_ptr.filesize;
-            const initprot = seg_ptr.initprot;
-            const perm = if ((initprot & macho.PROT.EXEC) != 0) Permission.execute else if ((initprot & macho.PROT.WRITE) != 0) Permission.write else if ((initprot & macho.PROT.READ) != 0) Permission.read else Permission.none;
-            try segments_list.append(allocator, Section{
-                .name = "",
-                .kind = SectionKind.unknown,
-                .size = seg_filesize,
-                .file_offset = seg_fileoff,
-                .permission = perm,
-            });
 
-            // collect sections within the segment
-            const secs = lc.getSections();
+        if (cmd == macho.LC.SEGMENT_64 and is_64) {
+            const seg = lc.cast(macho.segment_command_64) orelse continue;
+            const seg_fileoff = @as(u64, seg.fileoff);
+            const seg_filesize = seg.filesize;
+            const initprot = seg.initprot;
+            const perm = if ((initprot & macho.PROT.EXEC) != 0) Permission.execute else if ((initprot & macho.PROT.WRITE) != 0) Permission.write else if ((initprot & macho.PROT.READ) != 0) Permission.read else Permission.none;
+            try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = seg_filesize, .file_offset = seg_fileoff, .permission = perm });
+            try segmaps.append(allocator, SegmentMap{ .fileoff = seg_fileoff, .filesize = seg_filesize, .vmaddr = seg.vmaddr });
+
+            // parse sections by slicing the raw lc data (avoids alignment/@alignCast issues)
+            const section_size = @sizeOf(macho.section_64);
+            const sections_data = lc.data[@sizeOf(macho.segment_command_64)..];
             var i: usize = 0;
-            while (i < secs.len) : (i += 1) {
-                const sect_ptr = &secs[i];
-                const sect_val = sect_ptr.*;
-                const name = macho.section_64.sectName(&sect_val);
-                const off = @as(u64, sect_val.offset);
-                const size = sect_val.size;
-                // Baseline: don't try to derive section permissions precisely
-                try sections_list.append(allocator, Section{
-                    .name = name,
-                    .kind = SectionKind.unknown,
-                    .size = size,
-                    .file_offset = off,
-                    .permission = Permission.none,
-                });
+            while (i < seg.nsects) : (i += 1) {
+                const start = i * section_size;
+                if (start + section_size > sections_data.len) break; // malformed
+                const block = sections_data[start .. start + section_size];
+                const sect_struct = @as(*align(1) const macho.section_64, @ptrCast(block.ptr)).*;
+                const name_bytes: []const u8 = block[0..16];
+                const end = mem.indexOfScalar(u8, name_bytes, 0) orelse name_bytes.len;
+                const name = name_bytes[0..end];
+                const off = @as(u64, sect_struct.offset);
+                const size = sect_struct.size;
+                try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none });
+            }
+        } else if (cmd == macho.LC.SEGMENT and !is_64) {
+            const seg = lc.cast(macho.segment_command) orelse continue;
+            const seg_fileoff = @as(u64, seg.fileoff);
+            const seg_filesize = @as(u64, seg.filesize);
+            const initprot = seg.initprot;
+            const perm = if ((initprot & macho.PROT.EXEC) != 0) Permission.execute else if ((initprot & macho.PROT.WRITE) != 0) Permission.write else if ((initprot & macho.PROT.READ) != 0) Permission.read else Permission.none;
+            try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = seg_filesize, .file_offset = seg_fileoff, .permission = perm });
+            try segmaps.append(allocator, SegmentMap{ .fileoff = seg_fileoff, .filesize = seg_filesize, .vmaddr = @as(u64, seg.vmaddr) });
+
+            const section_size = @sizeOf(macho.section);
+            const sections_data = lc.data[@sizeOf(macho.segment_command)..];
+            var i: usize = 0;
+            while (i < seg.nsects) : (i += 1) {
+                const start = i * section_size;
+                if (start + section_size > sections_data.len) break; // malformed
+                const block = sections_data[start .. start + section_size];
+                const sect_struct = @as(*align(1) const macho.section, @ptrCast(block.ptr)).*;
+                const name_bytes: []const u8 = block[0..16];
+                const end = mem.indexOfScalar(u8, name_bytes, 0) orelse name_bytes.len;
+                const name = name_bytes[0..end];
+                const off = @as(u64, sect_struct.offset);
+                const size = @as(u64, sect_struct.size);
+                try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none });
             }
         } else if (cmd == macho.LC.SYMTAB) {
             const st = lc.cast(macho.symtab_command) orelse continue;
@@ -781,44 +757,81 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
             entry_fileoff = ep.entryoff;
             have_entry = true;
         } else {
-            // Common lib/load commands -> collect dylib names
             if (cmd == macho.LC.LOAD_DYLIB or cmd == macho.LC.LOAD_WEAK_DYLIB or cmd == macho.LC.REEXPORT_DYLIB or cmd == macho.LC.LOAD_UPWARD_DYLIB) {
                 const name = lc.getDylibPathName();
                 if (name.len != 0) try imports.append(allocator, name);
             } else if (cmd == macho.LC.RPATH) {
                 const rp = lc.getRpathPathName();
                 if (rp.len != 0) try messages.append(allocator, Message{ .body = rp });
+            } else if (cmd == macho.LC.CODE_SIGNATURE) {
+                // code signature presence
+                try messages.append(allocator, Message{ .body = "code signature present" });
+            } else if (cmd == macho.LC.DYLD_EXPORTS_TRIE or cmd == macho.LC.DYLD_INFO) {
+                try messages.append(allocator, Message{ .body = "dyld export/bind info present (not parsed)" });
             }
         }
     }
 
     // Parse symbol table (SYMTAB) if present
-    if (nsyms != 0 and symoff + nsyms * @sizeOf(macho.nlist_64) <= macho_buf.len and stroff + strsize <= macho_buf.len) {
-        const syms = @as([*]align(1) const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
-        var j: usize = 0;
-        while (j < syms.len) : (j += 1) {
-            const sym = syms[j];
-            const idx = @as(usize, sym.n_strx);
-            if (idx >= strsize) continue;
-            const name = mem.sliceTo(macho_buf[stroff + idx ..], 0);
-            if (macho.nlist_64.undf(sym)) {
-                // undefined -> import
-                try imports.append(allocator, name);
-            } else if (macho.nlist_64.ext(sym)) {
-                // defined external -> export
-                try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
+    var nlist_entry_size: usize = 0;
+    if (is_64) nlist_entry_size = @sizeOf(macho.nlist_64) else nlist_entry_size = @sizeOf(macho.nlist);
+
+    if (nsyms != 0 and symoff + nsyms * nlist_entry_size <= macho_buf.len and stroff + strsize <= macho_buf.len) {
+        if (is_64) {
+            const syms = @as([*]align(1) const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
+            var j: usize = 0;
+            while (j < syms.len) : (j += 1) {
+                const sym = syms[j];
+                const idx = @as(usize, sym.n_strx);
+                if (idx >= strsize) continue;
+                const name = mem.sliceTo(macho_buf[stroff + idx ..], 0);
+                if (macho.nlist_64.undf(sym)) {
+                    try imports.append(allocator, name);
+                } else if (macho.nlist_64.ext(sym)) {
+                    try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
+                }
+            }
+        } else {
+            const syms = @as([*]align(1) const macho.nlist, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
+            var j: usize = 0;
+            while (j < syms.len) : (j += 1) {
+                const sym = syms[j];
+                const idx = @as(usize, sym.n_strx);
+                if (idx >= strsize) continue;
+                const name = mem.sliceTo(macho_buf[stroff + idx ..], 0);
+                const ntype = sym.n_type;
+                const type_ = macho.N_TYPE & ntype;
+                if (type_ == macho.N_UNDF) {
+                    try imports.append(allocator, name);
+                } else if ((ntype & macho.N_EXT) != 0) {
+                    try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
+                }
             }
         }
     }
 
-    // Build BinaryDescription
-    const arch = switch (hdr.cputype) {
+    // Translate entry file offset -> virtual address using segment maps
+    var entry_va: u64 = 0;
+    if (have_entry) {
+        var i: usize = 0;
+        while (i < segmaps.items.len) : (i += 1) {
+            const sm = segmaps.items[i];
+            if (entry_fileoff >= sm.fileoff and entry_fileoff < sm.fileoff + sm.filesize) {
+                entry_va = sm.vmaddr + (entry_fileoff - sm.fileoff);
+                break;
+            }
+        }
+        if (entry_va == 0) entry_va = entry_fileoff; // fallback to file offset
+    }
+
+    const arch = switch (hdr_cputype) {
         macho.CPU_TYPE_X86_64 => CpuArch.x86_64,
         macho.CPU_TYPE_ARM64 => CpuArch.aarch64,
+        7 => CpuArch.x86,
         else => CpuArch.unknown,
     };
 
-    const file_kind = switch (hdr.filetype) {
+    const file_kind = switch (hdr_filetype) {
         macho.MH_EXECUTE => FileKind.executable,
         macho.MH_DYLIB => FileKind.shared_library,
         macho.MH_OBJECT => FileKind.object,
@@ -829,11 +842,11 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         .format = BinaryFileKind.macho,
         .os_abi = OsAbi.macos,
         .arch = arch,
-        .bitness = 64,
+        .bitness = if (is_64) 64 else 32,
         .endianess = Endian.little,
         .file_kind = file_kind,
-        .entrypoint_virtual_address = if (have_entry) @as(u64, entry_fileoff) else 0,
-        .pie = if ((hdr.flags & macho.MH_PIE) != 0) Perhaps.yes else Perhaps.no,
+        .entrypoint_virtual_address = entry_va,
+        .pie = if ((hdr_flags & macho.MH_PIE) != 0) Perhaps.yes else Perhaps.no,
         .aslr = Perhaps.unknown,
         .nx = Perhaps.unknown,
         .relro = RelroConfig.unknown,
@@ -846,21 +859,79 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         .debug_info_present = false,
     };
 
+    return desc;
+}
+
+/// Decodes a Mach-O file (thin or fat) into a BinaryBundle.
+fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
+    // Read whole file into backing buffer
+    const stat = try file.stat();
+    const file_size = @as(usize, stat.size);
+    var file_buf = try allocator.alloc(u8, file_size);
+    var keep_backing: bool = false;
+    defer if (!keep_backing) allocator.free(file_buf);
+
+    var fr = file.reader(file_buf);
+    try fr.interface.fill(file_size);
+
+    // Decide whether this is a FAT container or a thin Mach-O
+    const magic = mem.readInt(u32, file_buf[0..4], .big);
     var bundle_list = try std.ArrayList(BinaryDescription).initCapacity(allocator, 0);
     defer bundle_list.deinit(allocator);
-    try bundle_list.append(allocator, desc);
+
+    if (magic == macho.FAT_MAGIC or magic == macho.FAT_CIGAM or magic == macho.FAT_MAGIC_64 or magic == macho.FAT_CIGAM_64) {
+        const fat_endian: Endian = if (magic == macho.FAT_CIGAM or magic == macho.FAT_CIGAM_64) Endian.little else Endian.big;
+        if (file_buf.len < @sizeOf(macho.fat_header)) return ParseError.TooSmall;
+        const nfat = @as(usize, mem.readInt(u32, file_buf[4..8], fat_endian));
+        if (nfat == 0) return ParseError.Malformed;
+        const arch_off = @sizeOf(macho.fat_header);
+        const arch_size = @sizeOf(macho.fat_arch);
+        if (file_buf.len < arch_off + nfat * arch_size) return ParseError.TooSmall;
+
+        var i: usize = 0;
+        while (i < nfat) : (i += 1) {
+            const off_field = arch_off + i * arch_size + 8; // offset in fat_arch
+            const size_field = arch_off + i * arch_size + 12; // size in fat_arch
+
+            const b0 = @as(u32, file_buf[off_field]);
+            const b1 = @as(u32, file_buf[off_field + 1]);
+            const b2 = @as(u32, file_buf[off_field + 2]);
+            const b3 = @as(u32, file_buf[off_field + 3]);
+            const off32 = @as(usize, if (fat_endian == Endian.big) (b0 << 24) | (b1 << 16) | (b2 << 8) | b3 else (b3 << 24) | (b2 << 16) | (b1 << 8) | b0);
+
+            const s0 = @as(u32, file_buf[size_field]);
+            const s1 = @as(u32, file_buf[size_field + 1]);
+            const s2 = @as(u32, file_buf[size_field + 2]);
+            const s3 = @as(u32, file_buf[size_field + 3]);
+            const sz32 = @as(usize, if (fat_endian == Endian.big) (s0 << 24) | (s1 << 16) | (s2 << 8) | s3 else (s3 << 24) | (s2 << 16) | (s1 << 8) | s0);
+
+            if (off32 + sz32 <= file_buf.len) {
+                const slice = file_buf[off32 .. off32 + sz32];
+                const mm = mem.readInt(u32, slice[0..4], .big);
+                // Quick check: only attempt to decode little-endian slices here.
+                if (mm == macho.MH_CIGAM_64 or mm == macho.MH_CIGAM) {
+                    // little-endian slices - try decode
+                    const desc = try decodeMachoSlice(allocator, slice);
+                    try bundle_list.append(allocator, desc);
+                } else {
+                    // Unsupported (big-endian) slice — skip for now
+                    continue;
+                }
+            }
+        }
+    } else {
+        // Thin Mach-O — decode the whole file
+        const desc = try decodeMachoSlice(allocator, file_buf);
+        try bundle_list.append(allocator, desc);
+    }
+
     const items = try bundle_list.toOwnedSlice(allocator);
-
-    const bundle = BinaryBundle{
-        .items = items,
-        .backing_file = file_buf,
-    };
-
+    const bundle = BinaryBundle{ .items = items, .backing_file = file_buf };
     keep_backing = true;
     return bundle;
 }
 
-test ": ELF basic parsing" {
+test ": ELF.amd64 analyze binary + pretty print" {
     var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
     defer file.close();
     const allocator = std.testing.allocator;
@@ -868,8 +939,20 @@ test ": ELF basic parsing" {
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items[0].format == .elf);
     try expect(bundle.items[0].arch == .x86_64); // Assuming test file
-    //std.debug.print("{}\n", .{desc});
-    //
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    try bundle.items[0].writePretty(&stderr_writer.interface);
+    try stderr_writer.interface.flush();
+}
+
+test ": Mach-O.amd64 analyze binary + pretty print" {
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items[0].format == .macho);
+    try expect(bundle.items[0].arch == .x86_64);
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     try bundle.items[0].writePretty(&stderr_writer.interface);

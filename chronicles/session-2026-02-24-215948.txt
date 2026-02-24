@@ -1,0 +1,123 @@
+Session chronicle — 2026-02-24 21:59:48 +01:00
+
+Context / goal
+--------------
+Continue Phase 2 work on Mach-O decoding: extend the baseline decoder so it handles the common Mach-O variants (thin 64-bit little-endian), add FAT/universal support (multi-arch slices), and make the decoder robust and zero-copy like the ELF decoder. Fix the compile/runtime errors that appeared during the edits and record lessons and decisions for future work.
+
+Short summary of outcome
+------------------------
+- Implemented decodeMachoSlice(...) and extended decodeMacho(...) to handle 64-bit little-endian Mach-O slices and FAT containers (multi-arch).  The implementation extracts segments, sections, SYMTAB-based imports/exports, LC_MAIN entrypoint translation via segment maps, and a few messages (code signature present, dyld info present).
+- Introduced and used a BinaryBundle owning the backing file buffer and a slice of BinaryDescription items (one item per slice when a FAT container is present). This preserves zero-copy semantics while allowing multi-arch returns.
+- Fixed multiple compilation/runtime issues encountered during development (comptime/runtime @sizeOf misuse, ArrayList field access, LoadCommandIterator initialization, format string mismatch when printing booleans, alignment/pointer-cast concerns).
+- Tests (zig build test) run: ELF tests pass; Mach-O test runs and produces a populated BinaryDescription for the MachO-OSX-x64-ls fixture: sections, segments, imports (83), exports (1), and messages present.
+
+Files changed (high level)
+-------------------------
+- src/root.zig — implemented and debugged Mach-O decoding (decodeMachoSlice, decodeMacho), BinaryBundle and supporting logic; updated analyzeBinary to return a BinaryBundle and updated tests accordingly.
+- chronicles/session-2026-02-23-233014.txt — (existing) referenced and reviewed.
+- chronicles/session-2026-02-24-002100.txt — (existing) referenced and reviewed.
+- chronicles/session-2026-02-24-215948.txt — this new chronicle entry (written now).
+
+Action log (what I did, in order)
+---------------------------------
+1) Implemented decodeMachoSlice that:
+   - Detects magic/bitness/endianness and currently accepts little-endian slices (skips big-endian).
+   - Reads mach_header or mach_header_64 safely and computes ncmds/sizeofcmds.
+   - Uses std.macho.LoadCommandIterator to iterate load commands safely and zero-copy slices to parse section headers.
+   - Collects segments and sections into ArrayList instances and later converts them to owned slices to include in BinaryDescription.
+   - Captures LC_SYMTAB (symoff, nsyms, stroff, strsize) and parses SYMTAB into imports/exports using nlist/nlist_64.
+   - Captures LC_MAIN.entryoff and translates it to a virtual entrypoint using recorded segment fileoff -> vmaddr mappings.
+   - Records messages for LC_CODE_SIGNATURE and dyld export/bind info presence.
+
+2) Implemented decodeMacho to:
+   - Read the entire file into a single allocator-owned buffer (backing buffer).
+   - Detect FAT vs thin Mach-O by reading the leading magic and, for FAT, iterate fat_arch entries and create slices pointing into the backing buffer.
+   - Attempt to decode per-slice as little-endian Mach-O using decodeMachoSlice and append the resulting BinaryDescription to the BinaryBundle.
+   - For thin Mach-O decode the whole file as a single slice.
+
+3) Fixed compile/runtime issues encountered while iterating (see "Errors and fixes" below), and re-ran the test suite after each fix until green.
+
+Errors and fixes (lessons learned — concrete examples)
+-----------------------------------------------------
+- Comptime/runtime @sizeOf usage:
+  Symptom: compiler error complaining that a comptime-only value depended on runtime control flow when using `if (is_64) @sizeOf(...) else @sizeOf(...)` inside a bounds expression.
+  Fix/Decision: compute the entry size at runtime in a separate statement:
+      var nlist_entry_size: usize = 0;
+      if (is_64) nlist_entry_size = @sizeOf(macho.nlist_64) else nlist_entry_size = @sizeOf(macho.nlist);
+  Rationale: avoid selecting a comptime-only value in a runtime expression.
+
+- ArrayList / field access confusion:
+  Symptom: used `.len` on an ArrayList-managed struct (e.g. segmaps.len) which is invalid; the actual slice is in `.items`.
+  Fix: use `segmaps.items.len` and iterate `segmaps.items[i]` or use the standard ArrayList API.
+
+- LoadCommandIterator initialization:
+  Symptom: left `index` uninitialized or initialized partially which caused next() to behave incorrectly (or be mis-initialized when using `undefined`).
+  Fix: initialize the iterator explicitly: `var lc_it: macho.LoadCommandIterator = .{ .ncmds = ncmds, .buffer = lc_buffer, .index = 0 };` or assign fields explicitly when needed.
+
+- Format string mismatch when printing booleans:
+  Symptom: used `{b}` to print a bool with std.debug.print which caused a compile-time format validation error.
+  Fix: format booleans as `{s}` with `if (b) "yes" else "no"` or convert to a string before printing.
+
+- Alignment and pointer-casting pitfalls:
+  Symptom: attempted to `@ptrCast` an unaligned slice directly into an aligned array type and ran into alignment/UB concerns.
+  Fix: either use `[]align(1) const T` casting form or copy the small struct value into a properly aligned local before calling helpers that expect aligned pointers. In several places I used `@as([*]align(1) const macho.nlist_64, @ptrCast(...))[0..n]` to avoid alignment errors.
+
+- Skipping unsupported variants (big-endian) vs crashing:
+  Decision: conservatively skip big-endian slices in FAT containers and return error.UnsupportedVariant when encountering unexpected variants; prefer conservative error behavior over unsafe parsing.
+
+Key design decisions made
+------------------------
+- Zero-copy backing buffer model retained: read the full file once and let all BinaryDescription slices point into that single buffer. Ownership is controlled by BinaryBundle.
+
+- BinaryBundle introduced as the owning container for one-or-more BinaryDescription values and the shared backing buffer. This enables returning multiple architecture descriptions (fat binaries) without duplicating file contents.
+
+- SYMTAB-first symbol strategy: parse symbols from LC_SYMTAB (nlist/nlist_64 + strtab) as the pragmatic first step for imports/exports. Export trie/LC_DYLD_INFO parsing is planned for a follow-up (more accurate but more complex).
+
+- Conservative variant support initially: implement and test 64-bit little-endian Mach-O first (most common on macOS), skip big-endian and lesser-used combinations until core architecture is stable.
+
+- Entrypoint translation: use a recorded segment map (fileoff, filesize -> vmaddr) and translate LC_MAIN.entryoff (file offset) to a virtual address using the containing segment. Fallback to the raw file offset if no containing segment is found.
+
+Test notes / results
+--------------------
+- Ran `zig build test` repeatedly while iterating.
+- ELF tests pass (existing behavior unchanged).
+- Mach-O test using `testing/assets/MachO-OSX-x64-ls` now succeeds and prints a populated description with:
+  - sections: 14
+  - segments: 4
+  - imports: 83 (dylib names and undefined symbol names)
+  - exports: 1
+  - messages: 1 ("code signature present")
+- Example run-time diagnostic output used during debugging (trimmed):
+  - decodeMachoSlice: mm=0xcffaedfe is_64=64 ncmds=16 sizeofcmds=2008
+  - iterated load commands and observed LC.SEGMENT_64, LC.SYMTAB, LC.MAIN, LC.*
+  - final pretty-print of BinaryDescription as part of the test.
+
+Open issues / next work items
+----------------------------
+1) Big-endian and 32-bit Mach-O support — implement endianness-aware integer reads (mem.readInt) and careful pointer usage or explicit field-by-field extraction.
+2) Proper FAT multi-arch selection strategy — prefer host arch when present (using builtin.target), or return all slices (current implementation appends any little-endian slices to the bundle).
+3) Parse LC_DYLD_INFO and LC_DYLD_EXPORTS_TRIE — implement export trie parsing and bind/rebase parsing to improve export/import accuracy.
+4) Implement indirect symbol table (LC_DYSYMTAB + indirectsym) parsing — for correct resolution of lazy/non-lazy imports and symbol-stub sections.
+5) Improve detection of NX, RELRO and ASLR for Mach-O by examining segment protections and flags where applicable.
+6) Add more unit tests and negative tests (malformed/truncated inputs, 32-bit, FAT binaries, stripped binaries).
+7) Review/remove debug prints and consolidate logging behind a debug switch or test-only instrumentation.
+
+References
+----------
+- stdlib Mach-O helpers: $ZIG_STD/std/macho.zig (local copy used: ~/.local/share/mise/installs/zig/0.15.2/lib/std/macho.zig)
+- Zig std.ArrayList patterns and lifetime semantics as used in decodeElf implementation.
+
+Ownership / housekeeping
+------------------------
+- BinaryBundle owns:
+  - items: []BinaryDescription (owned slice allocated with allocator)
+  - backing_file: []u8 (single allocator-owned file buffer)
+- Caller must call BinaryBundle.free(allocator, bundle) to free both per-description owned slices and the shared backing buffer.
+
+Recorded-by
+-----------
+Agent: assistant (on behalf of user)
+Recorded at: Tue Feb 24 21:59:48 CET 2026
+
+
+End of chronicle entry

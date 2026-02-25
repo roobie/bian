@@ -626,6 +626,29 @@ fn readU32At(buf: []const u8, off: usize, endian: Endian) u32 {
     return if (endian == .big) (b0 << 24) | (b1 << 16) | (b2 << 8) | b3 else (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
 }
 
+// Guarded macho.LC conversion: return null if the numeric value doesn't map
+// to any of the LC enum variants we care about. This is intentionally
+// conservative: we whitelist only the commands our parser handles and treat
+// unknown/extended values as "skip" instead of triggering a safety error.
+fn machoLCFromU32(val: u32) ?macho.LC {
+    // Note: avoid casting enum variants to integers (older Zig versions may not
+    // support the required builtin). Use the documented numeric values from
+    // std.macho for comparisons.
+    if (val == 0x19) return macho.LC.SEGMENT_64; // SEGMENT_64
+    if (val == 0x1) return macho.LC.SEGMENT; // SEGMENT
+    if (val == 0x2) return macho.LC.SYMTAB; // SYMTAB
+    if (val == (0x28 | macho.LC_REQ_DYLD)) return macho.LC.MAIN; // MAIN with REQ_DYLD
+    if (val == 0x0c) return macho.LC.LOAD_DYLIB; // LOAD_DYLIB
+    if (val == (0x18 | macho.LC_REQ_DYLD)) return macho.LC.LOAD_WEAK_DYLIB; // LOAD_WEAK_DYLIB
+    if (val == (0x1f | macho.LC_REQ_DYLD)) return macho.LC.REEXPORT_DYLIB; // REEXPORT_DYLIB
+    if (val == (0x23 | macho.LC_REQ_DYLD)) return macho.LC.LOAD_UPWARD_DYLIB; // LOAD_UPWARD_DYLIB
+    if (val == (0x1c | macho.LC_REQ_DYLD)) return macho.LC.RPATH; // RPATH
+    if (val == 0x1d) return macho.LC.CODE_SIGNATURE; // CODE_SIGNATURE
+    if (val == (0x33 | macho.LC_REQ_DYLD)) return macho.LC.DYLD_EXPORTS_TRIE; // DYLD_EXPORTS_TRIE
+    if (val == 0x22) return macho.LC.DYLD_INFO; // DYLD_INFO
+    return null;
+}
+
 fn machoProtToPermission(p: macho.vm_prot_t) Permission {
     return if ((p & macho.PROT.EXEC) != 0) Permission.execute else if ((p & macho.PROT.WRITE) != 0) Permission.write else if ((p & macho.PROT.READ) != 0) Permission.read else Permission.none;
 }
@@ -637,6 +660,83 @@ test "readU32At: endian correctness" {
     try expect(readU32At(data[0..], 0, Endian.little) == 0x44332211);
     try expect(readU32At(data[0..], 4, Endian.big) == 0xAABBCCDD);
     try expect(readU32At(data[0..], 4, Endian.little) == 0xDDCCBBAA);
+}
+
+// Unit tests for guarded enum conversion
+test "machoLCFromU32: macho.LC known/unknown" {
+    const known: u32 = 0x2; // LC_SYMTAB
+    const maybe = machoLCFromU32(known);
+    try expect(maybe != null);
+    try expect(maybe.? == macho.LC.SYMTAB);
+
+    const unknown_val: u32 = 0xDEADBEEF;
+    const none = machoLCFromU32(unknown_val);
+    try expect(none == null);
+}
+
+// TDD: ensure decodeMachoSlice treats unknown load commands in big-endian
+// buffers gracefully (i.e. does not crash due to @enumFromInt).
+test "decodeMachoSlice: big-endian unknown LC skipped" {
+    var buf: [128]u8 = @splat(0);
+    const macho_buf = buf[0..];
+    const hdr_size = @sizeOf(macho.mach_header_64);
+    // Write big-endian MH_MAGIC_64
+    const mh_magic = @as(u32, macho.MH_MAGIC_64);
+    macho_buf[0] = @as(u8, mh_magic >> 24);
+    macho_buf[1] = @as(u8, (mh_magic >> 16) & 0xFF);
+    macho_buf[2] = @as(u8, (mh_magic >> 8) & 0xFF);
+    macho_buf[3] = @as(u8, mh_magic & 0xFF);
+
+    // cputype (i32) at 4..8 -> CPU_TYPE_X86_64
+    const cputype = @as(u32, macho.CPU_TYPE_X86_64);
+    macho_buf[4] = @as(u8, cputype >> 24);
+    macho_buf[5] = @as(u8, (cputype >> 16) & 0xFF);
+    macho_buf[6] = @as(u8, (cputype >> 8) & 0xFF);
+    macho_buf[7] = @as(u8, cputype & 0xFF);
+
+    // filetype at 12..16 -> MH_EXECUTE
+    const filetype = @as(u32, macho.MH_EXECUTE);
+    macho_buf[12] = @as(u8, filetype >> 24);
+    macho_buf[13] = @as(u8, (filetype >> 16) & 0xFF);
+    macho_buf[14] = @as(u8, (filetype >> 8) & 0xFF);
+    macho_buf[15] = @as(u8, filetype & 0xFF);
+
+    // ncmds at 16..20 -> 1
+    const ncmds: u32 = 1;
+    macho_buf[16] = @as(u8, ncmds >> 24);
+    macho_buf[17] = @as(u8, (ncmds >> 16) & 0xFF);
+    macho_buf[18] = @as(u8, (ncmds >> 8) & 0xFF);
+    macho_buf[19] = @as(u8, ncmds & 0xFF);
+
+    // sizeofcmds at 20..24 -> 8 (one minimal LC)
+    const sizeofcmds: u32 = 8;
+    macho_buf[20] = @as(u8, sizeofcmds >> 24);
+    macho_buf[21] = @as(u8, (sizeofcmds >> 16) & 0xFF);
+    macho_buf[22] = @as(u8, (sizeofcmds >> 8) & 0xFF);
+    macho_buf[23] = @as(u8, sizeofcmds & 0xFF);
+
+    const total_len = hdr_size + @as(usize, sizeofcmds);
+
+    // Write one unknown load command at offset hdr_size
+    const off = hdr_size;
+    const unknown_cmd: u32 = 0xDEADBEEF;
+    macho_buf[off + 0] = @as(u8, unknown_cmd >> 24);
+    macho_buf[off + 1] = @as(u8, (unknown_cmd >> 16) & 0xFF);
+    macho_buf[off + 2] = @as(u8, (unknown_cmd >> 8) & 0xFF);
+    macho_buf[off + 3] = @as(u8, unknown_cmd & 0xFF);
+
+    const cmdsize: u32 = 8;
+    macho_buf[off + 4] = @as(u8, cmdsize >> 24);
+    macho_buf[off + 5] = @as(u8, (cmdsize >> 16) & 0xFF);
+    macho_buf[off + 6] = @as(u8, (cmdsize >> 8) & 0xFF);
+    macho_buf[off + 7] = @as(u8, cmdsize & 0xFF);
+
+    const allocator = std.testing.allocator;
+    const desc = try decodeMachoSlice(allocator, macho_buf[0..total_len]);
+    // Should succeed and produce a macho description; unknown LC is skipped.
+    try expect(desc.format == .macho);
+    try expect(desc.file_kind == .executable);
+    try expect(desc.arch == .x86_64);
 }
 
 fn elfSectionFlagsToPermission(sh_flags: u64) Permission {
@@ -944,69 +1044,74 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
         while (lc_index < ncmds) : (lc_index += 1) {
             if (off + 8 > macho_buf.len) return ParseError.Malformed;
             const cmd_val = readU32At(macho_buf, off, m_endian);
-            const cmd: macho.LC = @enumFromInt(cmd_val);
+            const opt_cmd = machoLCFromU32(cmd_val);
             const cmdsize = @as(usize, readU32At(macho_buf, off + 4, m_endian));
             if (cmdsize < 8) return ParseError.Malformed;
             if (off + cmdsize > macho_buf.len) return ParseError.Malformed;
 
             const lc_data = macho_buf[off .. off + cmdsize];
 
-            if (cmd == macho.LC.SEGMENT_64 and is_64) {
-                // segment_command_64 layout (big-endian): cmd/cmdsize (0..8), segname (8..24), vmaddr (24..32), vmsize (32..40), fileoff (40..48), filesize (48..56), maxprot (56..60), initprot (60..64), nsects (64..68), flags (68..72)
-                const seg_fileoff = mem.readInt(u64, lc_data[40..48], m_endian);
-                const seg_filesize = mem.readInt(u64, lc_data[48..56], m_endian);
-                const vmaddr = mem.readInt(u64, lc_data[24..32], m_endian);
-                const initprot = @as(macho.vm_prot_t, mem.readInt(i32, lc_data[60..64], m_endian));
-                const perm = machoProtToPermission(initprot);
-                try appendSegmentAndMap(allocator, &segments_list, &segmaps, seg_fileoff, seg_filesize, vmaddr, perm);
+            if (opt_cmd) |cmd| {
 
-                const section_size = @sizeOf(macho.section_64);
-                const sections_data = lc_data[@sizeOf(macho.segment_command_64)..];
-                var i: usize = 0;
-                const nsects = @as(usize, mem.readInt(u32, lc_data[64..68], m_endian));
-                while (i < nsects) : (i += 1) {
-                    const start = i * section_size;
-                    if (start + section_size > sections_data.len) break;
-                    const block = sections_data[start .. start + section_size];
-                    try appendSectionFromBlock(allocator, &sections_list, block, true, m_endian);
-                }
-            } else if (cmd == macho.LC.SEGMENT and !is_64) {
-                // segment_command (32-bit): cmd/cmdsize (0..8), segname (8..24), vmaddr (24..28), vmsize (28..32), fileoff (32..36), filesize (36..40), maxprot (40..44), initprot (44..48), nsects (48..52), flags (52..56)
-                const seg_fileoff = @as(u64, mem.readInt(u32, lc_data[32..36], m_endian));
-                const seg_filesize = @as(u64, mem.readInt(u32, lc_data[36..40], m_endian));
-                const vmaddr = @as(u64, mem.readInt(u32, lc_data[24..28], m_endian));
-                const initprot = @as(macho.vm_prot_t, mem.readInt(i32, lc_data[44..48], m_endian));
-                const perm = machoProtToPermission(initprot);
-                try appendSegmentAndMap(allocator, &segments_list, &segmaps, seg_fileoff, seg_filesize, vmaddr, perm);
+                if (cmd == macho.LC.SEGMENT_64 and is_64) {
+                    // segment_command_64 layout (big-endian): cmd/cmdsize (0..8), segname (8..24), vmaddr (24..32), vmsize (32..40), fileoff (40..48), filesize (48..56), maxprot (56..60), initprot (60..64), nsects (64..68), flags (68..72)
+                    const seg_fileoff = mem.readInt(u64, lc_data[40..48], m_endian);
+                    const seg_filesize = mem.readInt(u64, lc_data[48..56], m_endian);
+                    const vmaddr = mem.readInt(u64, lc_data[24..32], m_endian);
+                    const initprot = @as(macho.vm_prot_t, mem.readInt(i32, lc_data[60..64], m_endian));
+                    const perm = machoProtToPermission(initprot);
+                    try appendSegmentAndMap(allocator, &segments_list, &segmaps, seg_fileoff, seg_filesize, vmaddr, perm);
 
-                const section_size = @sizeOf(macho.section);
-                const sections_data = lc_data[@sizeOf(macho.segment_command)..];
-                var i: usize = 0;
-                const nsects = @as(usize, mem.readInt(u32, lc_data[48..52], m_endian));
-                while (i < nsects) : (i += 1) {
-                    const start = i * section_size;
-                    if (start + section_size > sections_data.len) break;
-                    const block = sections_data[start .. start + section_size];
-                    try appendSectionFromBlock(allocator, &sections_list, block, false, m_endian);
+                    const section_size = @sizeOf(macho.section_64);
+                    const sections_data = lc_data[@sizeOf(macho.segment_command_64)..];
+                    var i: usize = 0;
+                    const nsects = @as(usize, mem.readInt(u32, lc_data[64..68], m_endian));
+                    while (i < nsects) : (i += 1) {
+                        const start = i * section_size;
+                        if (start + section_size > sections_data.len) break;
+                        const block = sections_data[start .. start + section_size];
+                        try appendSectionFromBlock(allocator, &sections_list, block, true, m_endian);
+                    }
+                } else if (cmd == macho.LC.SEGMENT and !is_64) {
+                    // segment_command (32-bit): cmd/cmdsize (0..8), segname (8..24), vmaddr (24..28), vmsize (28..32), fileoff (32..36), filesize (36..40), maxprot (40..44), initprot (44..48), nsects (48..52), flags (52..56)
+                    const seg_fileoff = @as(u64, mem.readInt(u32, lc_data[32..36], m_endian));
+                    const seg_filesize = @as(u64, mem.readInt(u32, lc_data[36..40], m_endian));
+                    const vmaddr = @as(u64, mem.readInt(u32, lc_data[24..28], m_endian));
+                    const initprot = @as(macho.vm_prot_t, mem.readInt(i32, lc_data[44..48], m_endian));
+                    const perm = machoProtToPermission(initprot);
+                    try appendSegmentAndMap(allocator, &segments_list, &segmaps, seg_fileoff, seg_filesize, vmaddr, perm);
+
+                    const section_size = @sizeOf(macho.section);
+                    const sections_data = lc_data[@sizeOf(macho.segment_command)..];
+                    var i: usize = 0;
+                    const nsects = @as(usize, mem.readInt(u32, lc_data[48..52], m_endian));
+                    while (i < nsects) : (i += 1) {
+                        const start = i * section_size;
+                        if (start + section_size > sections_data.len) break;
+                        const block = sections_data[start .. start + section_size];
+                        try appendSectionFromBlock(allocator, &sections_list, block, false, m_endian);
+                    }
+                } else if (cmd == macho.LC.SYMTAB) {
+                    symoff = @as(usize, mem.readInt(u32, lc_data[8..12], m_endian));
+                    nsyms = @as(usize, mem.readInt(u32, lc_data[12..16], m_endian));
+                    stroff = @as(usize, mem.readInt(u32, lc_data[16..20], m_endian));
+                    strsize = @as(usize, mem.readInt(u32, lc_data[20..24], m_endian));
+                } else if (cmd == macho.LC.MAIN) {
+                    entry_fileoff = mem.readInt(u64, lc_data[8..16], m_endian);
+                    have_entry = true;
+                } else {
+                    if (cmd == macho.LC.LOAD_DYLIB or cmd == macho.LC.LOAD_WEAK_DYLIB or cmd == macho.LC.REEXPORT_DYLIB or cmd == macho.LC.LOAD_UPWARD_DYLIB) {
+                        try appendDylibNameFromLcData(allocator, &imports, lc_data, m_endian);
+                    } else if (cmd == macho.LC.RPATH) {
+                        try appendRpathMessageFromLcData(allocator, &messages, lc_data, m_endian);
+                    } else if (cmd == macho.LC.CODE_SIGNATURE) {
+                        try messages.append(allocator, Message{ .body = "code signature present" });
+                    } else if (cmd == macho.LC.DYLD_EXPORTS_TRIE or cmd == macho.LC.DYLD_INFO) {
+                        try messages.append(allocator, Message{ .body = "dyld export/bind info present (not parsed)" });
+                    }
                 }
-            } else if (cmd == macho.LC.SYMTAB) {
-                symoff = @as(usize, mem.readInt(u32, lc_data[8..12], m_endian));
-                nsyms = @as(usize, mem.readInt(u32, lc_data[12..16], m_endian));
-                stroff = @as(usize, mem.readInt(u32, lc_data[16..20], m_endian));
-                strsize = @as(usize, mem.readInt(u32, lc_data[20..24], m_endian));
-            } else if (cmd == macho.LC.MAIN) {
-                entry_fileoff = mem.readInt(u64, lc_data[8..16], m_endian);
-                have_entry = true;
             } else {
-                if (cmd == macho.LC.LOAD_DYLIB or cmd == macho.LC.LOAD_WEAK_DYLIB or cmd == macho.LC.REEXPORT_DYLIB or cmd == macho.LC.LOAD_UPWARD_DYLIB) {
-                    try appendDylibNameFromLcData(allocator, &imports, lc_data, m_endian);
-                } else if (cmd == macho.LC.RPATH) {
-                    try appendRpathMessageFromLcData(allocator, &messages, lc_data, m_endian);
-                } else if (cmd == macho.LC.CODE_SIGNATURE) {
-                    try messages.append(allocator, Message{ .body = "code signature present" });
-                } else if (cmd == macho.LC.DYLD_EXPORTS_TRIE or cmd == macho.LC.DYLD_INFO) {
-                    try messages.append(allocator, Message{ .body = "dyld export/bind info present (not parsed)" });
-                }
+                // Unknown/unsupported load command value: skip it gracefully.
             }
 
             off += cmdsize;

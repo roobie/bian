@@ -384,6 +384,17 @@ pub fn detectFormat(buffer: []u8) Stage0ParseResult {
             // 64 LE
             return Stage0ParseResult{ .macho = MachoHint{ .bitness = 64, .endianess = .little } };
         }
+
+        // FAT/universal Mach-O container: recognize FAT_MAGIC variants and
+        // consider the file as Mach-O. We don't pick a single bitness here
+        // since a fat file can contain multiple slices of varying bitness; the
+        // downstream decoder will handle slice enumeration.
+        // FAT magic constants are defined in std.macho (FAT_MAGIC / FAT_CIGAM / FAT_MAGIC_64 / FAT_CIGAM_64).
+        const fat_magic = readU32At(buffer, 0, .big);
+        if (fat_magic == macho.FAT_MAGIC or fat_magic == macho.FAT_CIGAM or fat_magic == macho.FAT_MAGIC_64 or fat_magic == macho.FAT_CIGAM_64) {
+            const fat_endian = if (fat_magic == macho.FAT_CIGAM or fat_magic == macho.FAT_CIGAM_64) Endian.little else Endian.big;
+            return Stage0ParseResult{ .macho = MachoHint{ .bitness = 0, .endianess = fat_endian } };
+        }
     }
 
     // 3. PE:
@@ -1473,6 +1484,58 @@ test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty
         try desc.writePretty(&w);
         try expect(w.end > 0);
     }
+}
+
+test "probe: Mach-O ppc thin detectFormat + analyzeBinary" {
+    var buf: [prefix_length]u8 = @splat(0);
+    try bufferedRead("testing/assets/MachO-OSX-ppc-openssl-1.0.1h", buf[0..], prefix_length);
+    const presult = detectFormat(buf[0..]);
+    try expect(presult.macho.bitness == 32);
+    try expect(presult.macho.endianess == .big);
+
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-ppc-openssl-1.0.1h", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items.len >= 1);
+    try expect(bundle.items[0].format == .macho);
+    try expect(bundle.items[0].bitness == 32);
+    try expect(bundle.items[0].endianess == .big);
+}
+
+test "probe: Mach-O universal libSystem decode has both 32 and 64 slices" {
+    var file = try std.fs.cwd().openFile("testing/assets/libSystem.B.dylib", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items.len >= 2);
+    var found64: bool = false;
+    var found32: bool = false;
+    var i: usize = 0;
+    while (i < bundle.items.len) : (i += 1) {
+        const d = bundle.items[i];
+        if (d.bitness == 64) found64 = true;
+        if (d.bitness == 32) found32 = true;
+    }
+    try expect(found64 == true);
+    try expect(found32 == true);
+}
+
+test "probe: Mach-O universal (ppc+i386) decodes at least one slice" {
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-ppc-and-i386-bash", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items.len >= 1);
+    var any32: bool = false;
+    var i: usize = 0;
+    while (i < bundle.items.len) : (i += 1) {
+        if (bundle.items[i].bitness == 32) any32 = true;
+    }
+    try expect(any32 == true);
 }
 
 test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imports/exports, pretty print)" {

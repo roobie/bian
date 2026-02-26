@@ -534,23 +534,16 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         });
     }
 
-    // 6) collect segments from program headers
+    // 6) collect segments from program headers and record segment maps for vaddr->file mappings
     var segments_list = try std.ArrayList(Section).initCapacity(allocator, 0);
     defer segments_list.deinit(allocator);
+    var segmaps = try std.ArrayList(SegmentMap).initCapacity(allocator, 0);
+    defer segmaps.deinit(allocator);
     var ph_iter = header.iterateProgramHeadersBuffer(file_buf);
     while (true) {
         const ph = try ph_iter.next() orelse break;
         const perm = if ((ph.p_flags & elf.PF_X) != 0) Permission.execute else if ((ph.p_flags & elf.PF_W) != 0) Permission.write else if ((ph.p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
-        try segments_list.append(allocator, Section{
-            .name = "", // segments typically don't have human names
-            .kind = SectionKind.unknown,
-            .size = ph.p_filesz,
-            .file_offset = ph.p_offset,
-            .permission = perm,
-            .flags = 0,
-            .reserved1 = 0,
-            .reserved2 = 0,
-        });
+        try appendSegmentAndMap(allocator, &segments_list, &segmaps, ph.p_offset, ph.p_filesz, ph.p_vaddr, perm);
     }
 
     // 7) build and return BinaryDescription (imports/exports parsing omitted here)
@@ -636,6 +629,30 @@ const SegmentMap = struct { fileoff: u64, filesize: u64, vmaddr: u64 };
 fn zslice(bytes: []const u8) []const u8 {
     const end = mem.indexOfScalar(u8, bytes, 0) orelse bytes.len;
     return bytes[0..end];
+}
+
+fn vaddrToFileOffset(file_len: usize, segmaps: []const SegmentMap, vaddr: u64) ?usize {
+    var i: usize = 0;
+    while (i < segmaps.len) : (i += 1) {
+        const m = segmaps[i];
+        // Check whether vaddr lies within the segment's vm range (file-backed portion)
+        if (vaddr >= m.vmaddr and vaddr < m.vmaddr + m.filesize) {
+            const off64 = m.fileoff + (vaddr - m.vmaddr);
+            if (off64 <= @as(u64, file_len)) return @as(usize, off64);
+            return null;
+        }
+    }
+    return null;
+}
+
+fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
+    // Bounds-check and avoid overflow when computing start+len
+    if (off64 > @as(u64, buf.len)) return null;
+    const off = @as(usize, off64);
+    if (len64 > @as(u64, buf.len)) return null;
+    const len = @as(usize, len64);
+    if (len > buf.len - off) return null;
+    return buf[off .. off + len];
 }
 
 fn readU32At(buf: []const u8, off: usize, endian: Endian) u32 {

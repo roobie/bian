@@ -625,7 +625,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                         const dynstr = file_buf[str_off .. str_off + @as(usize, dyn_str_sz)];
                         for (dt_needed_indices.items) |name_off| {
                             if (name_off < dynstr.len) {
-                                const s = mem.sliceTo(dynstr[name_off ..], 0);
+                                const s = mem.sliceTo(dynstr[name_off..], 0);
                                 if (s.len != 0) try imports.append(allocator, s);
                             }
                         }
@@ -652,7 +652,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                                 const dynstr = file_buf[off .. off + sz];
                                 for (dt_needed_indices.items) |name_off| {
                                     if (name_off < dynstr.len) {
-                                        const s = mem.sliceTo(dynstr[name_off ..], 0);
+                                        const s = mem.sliceTo(dynstr[name_off..], 0);
                                         if (s.len != 0) try imports.append(allocator, s);
                                     }
                                 }
@@ -682,7 +682,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                             const dynstr = file_buf[off .. off + sz];
                             for (dt_needed_indices.items) |name_off| {
                                 if (name_off < dynstr.len) {
-                                    const s = mem.sliceTo(dynstr[name_off ..], 0);
+                                    const s = mem.sliceTo(dynstr[name_off..], 0);
                                     if (s.len != 0) try imports.append(allocator, s);
                                 }
                             }
@@ -1578,7 +1578,8 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
 }
 
 test ": ELF.amd64 analyze binary + pretty print" {
-    var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
+    // var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
     const bundle = try analyzeBinary(allocator, file);

@@ -554,6 +554,148 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     var messages = try std.ArrayList(Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
 
+    // --- PT_DYNAMIC parsing: collect DT_NEEDED entries and map them via DT_STRTAB ---
+    var dyn_off: usize = 0;
+    var dyn_sz: usize = 0;
+    var have_dyn: bool = false;
+
+    // We recorded segmaps while parsing program headers. Re-iterate the program
+    // headers to discover the dynamic segment if we didn't capture it already.
+    // (We captured p_offset/p_filesz during the earlier iteration when building
+    // segmaps; if the underlying iterateProgramHeadersBuffer doesn't allow
+    // observing PT_DYNAMIC at that time, you would need to capture it there.
+    // But since we can observe ph entries again cheaply, do a quick second pass.)
+    var ph_iter2 = header.iterateProgramHeadersBuffer(file_buf);
+    while (true) {
+        const ph = try ph_iter2.next() orelse break;
+        if (ph.p_type == elf.PT_DYNAMIC) {
+            dyn_off = @as(usize, ph.p_offset);
+            dyn_sz = @as(usize, ph.p_filesz);
+            have_dyn = true;
+            break;
+        }
+    }
+
+    if (have_dyn) {
+        // Collect DT_* values
+        var dt_needed_indices = try std.ArrayList(usize).initCapacity(allocator, 0);
+        defer dt_needed_indices.deinit(allocator);
+        var dyn_str_vaddr: u64 = 0;
+        var dyn_str_sz: u64 = 0;
+        var bind_now: bool = false;
+
+        const dyn_region = safeSlice(file_buf, @as(u64, dyn_off), @as(u64, dyn_sz));
+        if (dyn_region == null) {
+            try messages.append(allocator, Message{ .body = "PT_DYNAMIC region out of bounds" });
+        } else {
+            var rdr = std.io.Reader.fixed(dyn_region.?);
+            while (true) {
+                if (header.is_64) {
+                    const d = try rdr.takeStruct(elf.Elf64_Dyn, header.endian);
+                    if (d.d_tag == elf.DT_NULL) break;
+                    if (d.d_tag == elf.DT_NEEDED) {
+                        try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                    } else if (d.d_tag == elf.DT_STRTAB) {
+                        dyn_str_vaddr = d.d_val;
+                    } else if (d.d_tag == elf.DT_STRSZ) {
+                        dyn_str_sz = d.d_val;
+                    } else if (d.d_tag == elf.DT_BIND_NOW) {
+                        bind_now = true;
+                    }
+                } else {
+                    const d = try rdr.takeStruct(elf.Elf32_Dyn, header.endian);
+                    if (d.d_tag == elf.DT_NULL) break;
+                    if (d.d_tag == elf.DT_NEEDED) {
+                        try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                    } else if (d.d_tag == elf.DT_STRTAB) {
+                        dyn_str_vaddr = @as(u64, d.d_val);
+                    } else if (d.d_tag == elf.DT_STRSZ) {
+                        dyn_str_sz = @as(u64, d.d_val);
+                    } else if (d.d_tag == elf.DT_BIND_NOW) {
+                        bind_now = true;
+                    }
+                }
+            }
+
+            // Map DT_STRTAB VMA -> file offset using segmaps
+            if (dyn_str_vaddr != 0 and dyn_str_sz != 0) {
+                const maybe = vaddrToFileOffset(file_buf.len, segmaps.items, dyn_str_vaddr);
+                if (maybe) |str_off| {
+                    if (str_off + @as(usize, dyn_str_sz) <= file_buf.len) {
+                        const dynstr = file_buf[str_off .. str_off + @as(usize, dyn_str_sz)];
+                        for (dt_needed_indices.items) |name_off| {
+                            if (name_off < dynstr.len) {
+                                const s = mem.sliceTo(dynstr[name_off ..], 0);
+                                if (s.len != 0) try imports.append(allocator, s);
+                            }
+                        }
+                    } else {
+                        try messages.append(allocator, Message{ .body = "DT_STRTAB/DT_STRSZ out of bounds" });
+                    }
+                } else {
+                    // Fallback: look for a .dynstr section among section headers
+                    var found_dynstr: bool = false;
+                    var sh_iter3 = header.iterateSectionHeadersBuffer(file_buf);
+                    while (true) {
+                        const sh = try sh_iter3.next() orelse break;
+                        var name_slice: []const u8 = "";
+                        // Use shstrtab we built earlier
+                        if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
+                            const tail = shstrtab[@as(usize, sh.sh_name)..];
+                            const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
+                            name_slice = tail[0..end];
+                        }
+                        if (name_slice.len != 0 and mem.eql(u8, name_slice, ".dynstr")) {
+                            const off = @as(usize, sh.sh_offset);
+                            const sz = @as(usize, sh.sh_size);
+                            if (off + sz <= file_buf.len) {
+                                const dynstr = file_buf[off .. off + sz];
+                                for (dt_needed_indices.items) |name_off| {
+                                    if (name_off < dynstr.len) {
+                                        const s = mem.sliceTo(dynstr[name_off ..], 0);
+                                        if (s.len != 0) try imports.append(allocator, s);
+                                    }
+                                }
+                                found_dynstr = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!found_dynstr) try messages.append(allocator, Message{ .body = "could not map DT_STRTAB vaddr to file offset" });
+                }
+            } else if (dt_needed_indices.items.len != 0) {
+                // No DT_STRTAB/DT_STRSZ available; try .dynstr section fallback similarly
+                var found_dynstr2: bool = false;
+                var sh_iter4 = header.iterateSectionHeadersBuffer(file_buf);
+                while (true) {
+                    const sh = try sh_iter4.next() orelse break;
+                    var name_slice: []const u8 = "";
+                    if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
+                        const tail = shstrtab[@as(usize, sh.sh_name)..];
+                        const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
+                        name_slice = tail[0..end];
+                    }
+                    if (name_slice.len != 0 and mem.eql(u8, name_slice, ".dynstr")) {
+                        const off = @as(usize, sh.sh_offset);
+                        const sz = @as(usize, sh.sh_size);
+                        if (off + sz <= file_buf.len) {
+                            const dynstr = file_buf[off .. off + sz];
+                            for (dt_needed_indices.items) |name_off| {
+                                if (name_off < dynstr.len) {
+                                    const s = mem.sliceTo(dynstr[name_off ..], 0);
+                                    if (s.len != 0) try imports.append(allocator, s);
+                                }
+                            }
+                            found_dynstr2 = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found_dynstr2) try messages.append(allocator, Message{ .body = "DT_NEEDED entries present but no dynstr found" });
+            }
+        }
+    }
+
     const desc = BinaryDescription{
         .format = BinaryFileKind.elf,
         .os_abi = OsAbi.unknown, // map header.os_abi -> your OsAbi as needed

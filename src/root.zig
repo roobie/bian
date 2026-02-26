@@ -188,7 +188,7 @@ const BinaryDescription = struct {
     pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void {
         // If path supplied, print it first
         if (self.path.len != 0) {
-            try w.print("file: {s}\n", .{ self.path });
+            try w.print("file: {s}\n", .{self.path});
         }
 
         // Short helpers and mappings
@@ -817,7 +817,12 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
     var desc_path: []const u8 = &[_]u8{};
     if (path) |p| {
         var pbuf = try allocator.alloc(u8, p.len);
-        mem.copy(u8, pbuf, p);
+        // copy path bytes into allocated buffer
+        // copy bytes manually to avoid depending on std.mem.copy symbol
+        var j: usize = 0;
+        while (j < p.len) : (j += 1) {
+            pbuf[j] = p[j];
+        }
         desc_path = pbuf[0..p.len];
     }
 
@@ -1636,6 +1641,7 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
         .imports = try imports.toOwnedSlice(allocator),
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
+        .path = &[_]u8{},
         .debug_info_present = false,
     };
 
@@ -1687,7 +1693,12 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u
                     // attach path copy if provided
                     if (path) |p| {
                         var pbuf = try allocator.alloc(u8, p.len);
-                        mem.copy(u8, pbuf, p);
+                        // copy path bytes into allocated buffer
+                        // copy bytes manually to avoid depending on std.mem.copy symbol
+                        var j2: usize = 0;
+                        while (j2 < p.len) : (j2 += 1) {
+                            pbuf[j2] = p[j2];
+                        }
                         desc.path = pbuf[0..p.len];
                     } else {
                         desc.path = &[_]u8{};
@@ -1704,7 +1715,12 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u
         var desc = try decodeMachoSlice(allocator, file_buf);
         if (path) |p| {
             var pbuf = try allocator.alloc(u8, p.len);
-            mem.copy(u8, pbuf, p);
+            // copy path bytes into allocated buffer
+            // copy bytes manually to avoid depending on std.mem.copy symbol
+            var j3: usize = 0;
+            while (j3 < p.len) : (j3 += 1) {
+                pbuf[j3] = p[j3];
+            }
             desc.path = pbuf[0..p.len];
         } else {
             desc.path = &[_]u8{};

@@ -179,9 +179,18 @@ const BinaryDescription = struct {
 
     messages: []Message,
 
+    // optional path provided by the caller to analyzeBinary (canonicalization
+    // left to caller). If empty, path is unknown.
+    path: []const u8,
+
     debug_info_present: bool,
 
     pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void {
+        // If path supplied, print it first
+        if (self.path.len != 0) {
+            try w.print("file: {s}\n", .{ self.path });
+        }
+
         // Short helpers and mappings
         const fmt_str = switch (self.format) {
             BinaryFileKind.elf => "elf",
@@ -322,6 +331,8 @@ pub const BinaryBundle = struct {
             if (d.imports.len != 0) allocator.free(d.imports);
             if (d.exports.len != 0) allocator.free(d.exports);
             if (d.messages.len != 0) allocator.free(d.messages);
+            // Free per-description path if present
+            if (d.path.len != 0) allocator.free(d.path);
         }
         // Free the items slice itself
         if (self.items.len != 0) allocator.free(self.items);
@@ -467,7 +478,7 @@ test "pe.amd64" {
 }
 
 /// Decodes an ELF file into a BinaryBundle using the provided hint.
-fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
+fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle {
     // 1) read whole file into an allocator-owned buffer (we keep this as
     //    the backing buffer so section name slices can point into it)
     const stat = try file.stat();
@@ -803,6 +814,13 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
 
     const pie_hint = if (header.type == elf.ET.DYN) Perhaps.yes else if (header.type == elf.ET.EXEC) Perhaps.no else Perhaps.unknown;
 
+    var desc_path: []const u8 = &[_]u8{};
+    if (path) |p| {
+        var pbuf = try allocator.alloc(u8, p.len);
+        mem.copy(u8, pbuf, p);
+        desc_path = pbuf[0..p.len];
+    }
+
     const desc = BinaryDescription{
         .format = BinaryFileKind.elf,
         .os_abi = OsAbi.unknown, // map header.os_abi -> your OsAbi as needed
@@ -821,6 +839,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         .imports = try imports.toOwnedSlice(allocator),
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
+        .path = desc_path,
         .debug_info_present = false,
     };
 
@@ -855,7 +874,7 @@ pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescripti
 
 /// Analyzes a binary file and returns a BinaryBundle containing one or more
 /// BinaryDescription items (one per architecture slice for fat Mach-O).
-pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
+pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle {
     var buf: [1024]u8 = @splat(0);
     // Read initial prefix for detection (reuse prefix_length)
     var reader = file.reader(buf[0..]);
@@ -865,8 +884,8 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBun
 
     const stage0 = detectFormat(buffer);
     switch (stage0) {
-        .elf => return try decodeElf(allocator, file),
-        .macho => return try decodeMacho(allocator, file),
+        .elf => return try decodeElf(allocator, file, path),
+        .macho => return try decodeMacho(allocator, file, path),
         .pe => return error.UnsupportedVariant, // Stub for now
         .ape => return error.UnsupportedVariant, // Stub for now
         .unknown => return error.InvalidHeader,
@@ -1624,7 +1643,7 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
 }
 
 /// Decodes a Mach-O file (thin or fat) into a BinaryBundle.
-fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
+fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle {
     // Read whole file into backing buffer
     const stat = try file.stat();
     const file_size = @as(usize, stat.size);
@@ -1664,7 +1683,15 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                 // Quick check: only attempt to decode little-endian slices here.
                 if (mm == macho.MH_CIGAM_64 or mm == macho.MH_CIGAM) {
                     // little-endian slices - try decode
-                    const desc = try decodeMachoSlice(allocator, slice);
+                    var desc = try decodeMachoSlice(allocator, slice);
+                    // attach path copy if provided
+                    if (path) |p| {
+                        var pbuf = try allocator.alloc(u8, p.len);
+                        mem.copy(u8, pbuf, p);
+                        desc.path = pbuf[0..p.len];
+                    } else {
+                        desc.path = &[_]u8{};
+                    }
                     try bundle_list.append(allocator, desc);
                 } else {
                     // Unsupported (big-endian) slice — skip for now
@@ -1674,7 +1701,14 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         }
     } else {
         // Thin Mach-O — decode the whole file
-        const desc = try decodeMachoSlice(allocator, file_buf);
+        var desc = try decodeMachoSlice(allocator, file_buf);
+        if (path) |p| {
+            var pbuf = try allocator.alloc(u8, p.len);
+            mem.copy(u8, pbuf, p);
+            desc.path = pbuf[0..p.len];
+        } else {
+            desc.path = &[_]u8{};
+        }
         try bundle_list.append(allocator, desc);
     }
 
@@ -1689,7 +1723,7 @@ test ": ELF.amd64 analyze binary + pretty print" {
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items[0].format == .elf);
     try expect(bundle.items[0].arch == .x86_64); // Assuming test file
@@ -1703,7 +1737,7 @@ test ": Mach-O.amd64 analyze binary + pretty print" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items[0].format == .macho);
     try expect(bundle.items[0].arch == .x86_64);
@@ -1722,7 +1756,7 @@ test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty
     var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
 
     try expect(bundle.items.len >= 1);
@@ -1763,7 +1797,7 @@ test "probe: Mach-O ppc thin detectFormat + analyzeBinary" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-ppc-openssl-1.0.1h", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     try expect(bundle.items[0].format == .macho);
@@ -1775,7 +1809,7 @@ test "probe: Mach-O universal libSystem decode has both 32 and 64 slices" {
     var file = try std.fs.cwd().openFile("testing/assets/libSystem.B.dylib", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 2);
     var found64: bool = false;
@@ -1794,7 +1828,7 @@ test "probe: Mach-O universal (ppc+i386) decodes at least one slice" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-ppc-and-i386-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     var any32: bool = false;
@@ -1809,7 +1843,7 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
 
     try expect(bundle.items.len >= 1);
@@ -1850,7 +1884,7 @@ test "security.hints: ELF asset reports hints and imports/exports arrays" {
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     const desc = bundle.items[0];
@@ -1870,7 +1904,7 @@ test "symbol.parsing: Mach-O asset contains imports and at least one export" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file);
+    const bundle = try analyzeBinary(allocator, file, null);
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     const desc = bundle.items[0];
@@ -1879,3 +1913,16 @@ test "symbol.parsing: Mach-O asset contains imports and at least one export" {
     try expect(desc.imports.len > 0);
     try expect(desc.exports.len > 0);
 }
+
+// test "ape" {
+//     var file = try std.fs.cwd().openFile("testing/assets/basename.ape", .{});
+//     defer file.close();
+//     const allocator = std.testing.allocator;
+//     const bundle = try analyzeBinary(allocator, file, null);
+//     defer BinaryBundle.free(allocator, bundle);
+//     try expect(bundle.items.len >= 1);
+//     const desc = bundle.items[0];
+//     var alloc_w = std.io.Writer.Allocating.init(allocator);
+//     defer alloc_w.deinit();
+//     try desc.writePretty(&alloc_w.writer, PrettyPrintOptionsDefault);
+// }

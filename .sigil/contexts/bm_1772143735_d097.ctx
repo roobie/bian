@@ -1,0 +1,3 @@
+            const perm = if ((ph.p_flags & elf.PF_X) != 0) Permission.execute else if ((ph.p_flags & elf.PF_W) != 0) Permission.write else if ((ph.p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
+>>>         try appendSegmentAndMap(allocator, &segments_list, &segmaps, ph.p_offset, ph.p_filesz, ph.p_vaddr, perm);
+        }

@@ -1,0 +1,2 @@
+>>>     // --- PT_DYNAMIC parsing: collect DT_NEEDED entries and map them via DT_STRTAB ---
+        var dyn_off: usize = 0;

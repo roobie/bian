@@ -1,0 +1,3 @@
+                    } else {
+>>>                     // Fallback: look for a .dynstr section among section headers
+                        var found_dynstr: bool = false;

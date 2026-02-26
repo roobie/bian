@@ -114,6 +114,12 @@ pub const StrippedState = enum {
     partial,
 };
 
+pub const PrettyPrintOptions = struct {
+    print_symbols: bool,
+};
+
+pub const PrettyPrintOptionsDefault = PrettyPrintOptions{ .print_symbols = false };
+
 const SectionKind = enum {
     unknown,
     code,
@@ -175,7 +181,7 @@ const BinaryDescription = struct {
 
     debug_info_present: bool,
 
-    pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer) !void {
+    pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void {
         // Short helpers and mappings
         const fmt_str = switch (self.format) {
             BinaryFileKind.elf => "elf",
@@ -274,18 +280,22 @@ const BinaryDescription = struct {
         }
 
         try w.print("imports: {d}\n", .{self.imports.len});
-        for (self.imports) |imp| {
-            try w.print("  - {s}\n", .{imp});
+        if (opts.print_symbols) {
+            for (self.imports) |imp| {
+                try w.print("  - {s}\n", .{imp});
+            }
         }
 
         try w.print("exports: {d}\n", .{self.exports.len});
-        for (self.exports) |ex| {
-            const kind_str = switch (ex.kind) {
-                ExportKind.function => "function",
-                ExportKind.variable => "variable",
-                else => "unknown",
-            };
-            try w.print("  - {s} ({s})\n", .{ ex.name, kind_str });
+        if (opts.print_symbols) {
+            for (self.exports) |ex| {
+                const kind_str = switch (ex.kind) {
+                    ExportKind.function => "function",
+                    ExportKind.variable => "variable",
+                    else => "unknown",
+                };
+                try w.print("  - {s} ({s})\n", .{ ex.name, kind_str });
+            }
         }
 
         try w.print("messages: {d}\n", .{self.messages.len});
@@ -1685,7 +1695,7 @@ test ": ELF.amd64 analyze binary + pretty print" {
     try expect(bundle.items[0].arch == .x86_64); // Assuming test file
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    try bundle.items[0].writePretty(&stderr_writer.interface);
+    try bundle.items[0].writePretty(&stderr_writer.interface, PrettyPrintOptionsDefault);
     try stderr_writer.interface.flush();
 }
 
@@ -1699,7 +1709,7 @@ test ": Mach-O.amd64 analyze binary + pretty print" {
     try expect(bundle.items[0].arch == .x86_64);
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    try bundle.items[0].writePretty(&stderr_writer.interface);
+    try bundle.items[0].writePretty(&stderr_writer.interface, PrettyPrintOptionsDefault);
     try stderr_writer.interface.flush();
 }
 
@@ -1738,7 +1748,7 @@ test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty
         // Pretty-print must run without error and produce some output.
         var alloc_w = std.io.Writer.Allocating.init(allocator);
         defer alloc_w.deinit();
-        try desc.writePretty(&alloc_w.writer);
+        try desc.writePretty(&alloc_w.writer, PrettyPrintOptionsDefault);
         try expect(alloc_w.written().len > 0);
     }
 }
@@ -1830,7 +1840,7 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
 
         var alloc_w = std.io.Writer.Allocating.init(allocator);
         defer alloc_w.deinit();
-        try desc.writePretty(&alloc_w.writer);
+        try desc.writePretty(&alloc_w.writer, PrettyPrintOptionsDefault);
         try expect(alloc_w.written().len > 0);
     }
 }

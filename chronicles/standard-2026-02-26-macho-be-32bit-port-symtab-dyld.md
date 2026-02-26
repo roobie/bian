@@ -62,8 +62,14 @@ Finished the bulk of the BE/32-bit Mach-O port in src/root.zig: implemented endi
 
 ## Test results
 - Ran: `zig test src/root.zig -Dskip-unittests=false`
-- Outcome: All tests passed locally (15/15 when I ran them after the changes).
+- Outcome: All tests passed locally (18/18 after adding probe tests for PPC/fat/libSystem).
 
+- New tests added (committed in 489c51b): probe tests that exercise
+  - thin big-endian PPC Mach-O parsing (testing/assets/MachO-OSX-ppc-openssl-1.0.1h)
+  - universal libSystem (contains both 64-bit and 32-bit slices)
+  - universal ppc+i386 (testing/assets/MachO-OSX-ppc-and-i386-bash)
+
+- Chronicle and MINDMAP synced (MINDMAP.md added/updated, commit 032a97b).
 
 ## Design & rationale notes (why this approach)
 - Avoided std.mem.readInt(slice) in big-endian parsing because `std.mem.readInt` expects a pointer to a fixed-size array type; passing a runtime slice leads to type errors. The small readU*At family is explicit and easy to audit.

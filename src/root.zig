@@ -761,7 +761,8 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         sh_index += 1;
     }
 
-    
+
+    const desc = BinaryDescription{
         .format = BinaryFileKind.elf,
         .os_abi = OsAbi.unknown, // map header.os_abi -> your OsAbi as needed
         .arch = arch,
@@ -1704,10 +1705,10 @@ test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty
         }
 
         // Pretty-print must run without error and produce some output.
-        var out_buf: [8192]u8 = undefined;
-        var w = std.io.Writer.fixed(out_buf[0..]);
-        try desc.writePretty(&w);
-        try expect(w.end > 0);
+        var alloc_w = std.io.Writer.Allocating.init(allocator);
+        defer alloc_w.deinit();
+        try desc.writePretty(&alloc_w.interface);
+        try expect(alloc_w.written().len > 0);
     }
 }
 
@@ -1796,9 +1797,9 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
             try expect(ex.name.len > 0);
         }
 
-        var out_buf: [8192]u8 = undefined;
-        var w = std.io.Writer.fixed(out_buf[0..]);
-        try desc.writePretty(&w);
-        try expect(w.end > 0);
+        var alloc_w = std.io.Writer.Allocating.init(allocator);
+        defer alloc_w.deinit();
+        try desc.writePretty(&alloc_w.interface);
+        try expect(alloc_w.written().len > 0);
     }
 }

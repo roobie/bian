@@ -1,0 +1,3 @@
+    /// Decodes an ELF file into a BinaryBundle using the provided hint.
+>>> fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle {
+        // 1) read whole file into an allocator-owned buffer (we keep this as

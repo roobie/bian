@@ -1,0 +1,3 @@
+            if (self.path.len != 0) {
+>>>             try w.print("file: {s}\n", .{self.path});
+            }

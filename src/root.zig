@@ -1708,7 +1708,7 @@ test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty
         var alloc_w = std.io.Writer.Allocating.init(allocator);
         defer alloc_w.deinit();
         try desc.writePretty(&alloc_w.writer);
-        try expect(alloc_w.writer.written().len > 0);
+        try expect(alloc_w.written().len > 0);
     }
 }
 
@@ -1800,6 +1800,6 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
         var alloc_w = std.io.Writer.Allocating.init(allocator);
         defer alloc_w.deinit();
         try desc.writePretty(&alloc_w.writer);
-        try expect(alloc_w.writer.written().len > 0);
+        try expect(alloc_w.written().len > 0);
     }
 }

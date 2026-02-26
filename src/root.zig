@@ -1723,7 +1723,7 @@ test ": ELF.amd64 analyze binary + pretty print" {
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/elf-Linux-x64-bash");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items[0].format == .elf);
     try expect(bundle.items[0].arch == .x86_64); // Assuming test file
@@ -1737,7 +1737,7 @@ test ": Mach-O.amd64 analyze binary + pretty print" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/MachO-OSX-x64-ls");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items[0].format == .macho);
     try expect(bundle.items[0].arch == .x86_64);
@@ -1756,7 +1756,7 @@ test "decoders.invariants: ELF (backing buffer, sections/segments bounds, pretty
     var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/bian");
     defer BinaryBundle.free(allocator, bundle);
 
     try expect(bundle.items.len >= 1);
@@ -1797,7 +1797,7 @@ test "probe: Mach-O ppc thin detectFormat + analyzeBinary" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-ppc-openssl-1.0.1h", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/MachO-OSX-ppc-openssl-1.0.1h");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     try expect(bundle.items[0].format == .macho);
@@ -1809,7 +1809,7 @@ test "probe: Mach-O universal libSystem decode has both 32 and 64 slices" {
     var file = try std.fs.cwd().openFile("testing/assets/libSystem.B.dylib", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/libSystem.B.dylib");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 2);
     var found64: bool = false;
@@ -1828,7 +1828,7 @@ test "probe: Mach-O universal (ppc+i386) decodes at least one slice" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-ppc-and-i386-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/MachO-OSX-ppc-and-i386-bash");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     var any32: bool = false;
@@ -1843,7 +1843,7 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/MachO-OSX-x64-ls");
     defer BinaryBundle.free(allocator, bundle);
 
     try expect(bundle.items.len >= 1);
@@ -1884,7 +1884,7 @@ test "security.hints: ELF asset reports hints and imports/exports arrays" {
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/elf-Linux-x64-bash");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     const desc = bundle.items[0];
@@ -1904,7 +1904,7 @@ test "symbol.parsing: Mach-O asset contains imports and at least one export" {
     var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
     defer file.close();
     const allocator = std.testing.allocator;
-    const bundle = try analyzeBinary(allocator, file, null);
+    const bundle = try analyzeBinary(allocator, file, "testing/assets/MachO-OSX-x64-ls");
     defer BinaryBundle.free(allocator, bundle);
     try expect(bundle.items.len >= 1);
     const desc = bundle.items[0];

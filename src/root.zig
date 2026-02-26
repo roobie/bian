@@ -127,6 +127,10 @@ const Section = struct {
     size: u64,
     file_offset: u64,
     permission: Permission,
+    // Mach-O specific metadata (0 for other formats)
+    flags: u32,
+    reserved1: u32,
+    reserved2: u32,
 };
 const ExportKind = enum {
     unknown,
@@ -365,7 +369,7 @@ pub fn detectFormat(buffer: []u8) Stage0ParseResult {
         // For little-endian binaries,
         // it will be 0xcefaedfe for 32-bit and 0xcffaedfe for 64-bit.
         // These latter two are just the former but with inverted endianness.
-        const magic = mem.readInt(u32, buffer[0..4], .big);
+        const magic = readU32At(buffer, 0, .big);
         // std.debug.print("{x}\n", .{magic});
         if (magic == 0xfeedface) {
             // 32 BE
@@ -388,8 +392,8 @@ pub fn detectFormat(buffer: []u8) Stage0ParseResult {
         // Need the PE header offset from DOS header
         // (e_lfanew at offset 0x3C, 4 bytes LE).
         if (buffer.len >= 0x3C + 4) {
-            var dos_header = buffer[0..0x40]; // small DOS header region
-            const e_lfanew = mem.readInt(u32, dos_header[0x3C..0x40], .little);
+            const dos_header = buffer[0..0x40]; // small DOS header region
+            const e_lfanew = readU32At(dos_header, 0x3C, .little);
             // Basic sanity: e_lfanew must be within file bounds and allow "PE\0\0"
             const pe_sig_end = e_lfanew + 4;
             if (pe_sig_end <= buffer.len) {
@@ -513,6 +517,9 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
             .size = sh.sh_size,
             .file_offset = sh.sh_offset,
             .permission = perm,
+            .flags = 0,
+            .reserved1 = 0,
+            .reserved2 = 0,
         });
     }
 
@@ -529,6 +536,9 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
             .size = ph.p_filesz,
             .file_offset = ph.p_offset,
             .permission = perm,
+            .flags = 0,
+            .reserved1 = 0,
+            .reserved2 = 0,
         });
     }
 
@@ -626,6 +636,63 @@ fn readU32At(buf: []const u8, off: usize, endian: Endian) u32 {
     return if (endian == .big) (b0 << 24) | (b1 << 16) | (b2 << 8) | b3 else (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
 }
 
+fn readU64At(buf: []const u8, off: usize, endian: Endian) u64 {
+    // Caller must ensure off + 8 <= buf.len
+    const b0 = @as(u64, buf[off]);
+    const b1 = @as(u64, buf[off + 1]);
+    const b2 = @as(u64, buf[off + 2]);
+    const b3 = @as(u64, buf[off + 3]);
+    const b4 = @as(u64, buf[off + 4]);
+    const b5 = @as(u64, buf[off + 5]);
+    const b6 = @as(u64, buf[off + 6]);
+    const b7 = @as(u64, buf[off + 7]);
+    return if (endian == .big)
+        (b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32) | (b4 << 24) | (b5 << 16) | (b6 << 8) | b7
+    else
+        (b7 << 56) | (b6 << 48) | (b5 << 40) | (b4 << 32) | (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+}
+
+fn readI32At(buf: []const u8, off: usize, endian: Endian) i32 {
+    return @bitCast(readU32At(buf, off, endian));
+}
+
+// Top-level helper to lookup symbol name and type by index (used by parseSymtab)
+const SymInfo = struct {
+    name: []const u8,
+    n_type: u8,
+};
+
+fn symInfoByIndex(macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, idx: usize) ?SymInfo {
+    if (idx >= nsyms) return null;
+    if (m_endian == .little) {
+        if (is64) {
+            const syms = @as([*]align(1) const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
+            const sym = syms[idx];
+            const sidx = @as(usize, sym.n_strx);
+            if (sidx >= strsize) return null;
+            const name = mem.sliceTo(macho_buf[stroff + sidx ..], 0);
+            return SymInfo{ .name = name, .n_type = sym.n_type };
+        } else {
+            const syms = @as([*]align(1) const macho.nlist, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
+            const sym = syms[idx];
+            const sidx = @as(usize, sym.n_strx);
+            if (sidx >= strsize) return null;
+            const name = mem.sliceTo(macho_buf[stroff + sidx ..], 0);
+            return SymInfo{ .name = name, .n_type = sym.n_type };
+        }
+    } else {
+        const entry_size: usize = if (is64) 16 else 12;
+        const entry_off = symoff + idx * entry_size;
+        if (entry_off + entry_size > macho_buf.len) return null;
+        const n_strx = readU32At(macho_buf, entry_off, m_endian);
+        const n_type = macho_buf[entry_off + 4];
+        const sidx = @as(usize, n_strx);
+        if (sidx >= strsize) return null;
+        const name = mem.sliceTo(macho_buf[stroff + sidx ..], 0);
+        return SymInfo{ .name = name, .n_type = n_type };
+    }
+}
+
 // Guarded macho.LC conversion: return null if the numeric value doesn't map
 // to any of the LC enum variants we care about. This is intentionally
 // conservative: we whitelist only the commands our parser handles and treat
@@ -660,6 +727,23 @@ test "readU32At: endian correctness" {
     try expect(readU32At(data[0..], 0, Endian.little) == 0x44332211);
     try expect(readU32At(data[0..], 4, Endian.big) == 0xAABBCCDD);
     try expect(readU32At(data[0..], 4, Endian.little) == 0xDDCCBBAA);
+}
+
+// Unit test for readU64At and readI32At helpers
+test "readU64At: endian correctness" {
+    const data: [16]u8 = .{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88 };
+    try expect(readU64At(data[0..], 0, Endian.big) == 0x1122334455667788);
+    try expect(readU64At(data[0..], 0, Endian.little) == 0x8877665544332211);
+    try expect(readU64At(data[0..], 8, Endian.big) == 0xFFEEDDCCBBAA9988);
+    try expect(readU64At(data[0..], 8, Endian.little) == 0x8899AABBCCDDEEFF);
+}
+
+test "readI32At: endian correctness" {
+    const data_be: [8]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00 };
+    try expect(readI32At(data_be[0..], 0, Endian.big) == -1);
+    try expect(readI32At(data_be[0..], 4, Endian.big) == -2147483648);
+    const data_le: [8]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x80 };
+    try expect(readI32At(data_le[0..], 4, Endian.little) == -2147483648);
 }
 
 // Unit tests for guarded enum conversion
@@ -748,7 +832,7 @@ fn elfProgFlagsToPermission(p_flags: u32) Permission {
 }
 
 fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.ArrayList(Section), segmaps: *std.ArrayList(SegmentMap), fileoff: u64, filesize: u64, vmaddr: u64, perm: Permission) !void {
-    try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm });
+    try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm, .flags = 0, .reserved1 = 0, .reserved2 = 0 });
     try segmaps.append(allocator, SegmentMap{ .fileoff = fileoff, .filesize = filesize, .vmaddr = vmaddr });
 }
 
@@ -762,30 +846,42 @@ fn appendSectionFromBlock(allocator: std.mem.Allocator, sections_list: *std.Arra
             const sect_struct = @as(*align(1) const macho.section_64, @ptrCast(block.ptr)).*;
             const off = @as(u64, sect_struct.offset);
             const size = sect_struct.size;
-            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none });
+            const flags = sect_struct.flags;
+            const reserved1 = sect_struct.reserved1;
+            const reserved2 = sect_struct.reserved2;
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
         } else {
             const sect_struct = @as(*align(1) const macho.section, @ptrCast(block.ptr)).*;
             const off = @as(u64, sect_struct.offset);
             const size = @as(u64, sect_struct.size);
-            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none });
+            const flags = sect_struct.flags;
+            const reserved1 = sect_struct.reserved1;
+            const reserved2 = sect_struct.reserved2;
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
         }
     } else {
         if (is64) {
-            const off32 = mem.readInt(u32, block[48..52], m_endian);
-            const size = mem.readInt(u64, block[40..48], m_endian);
+            const off32 = readU32At(block, 48, m_endian);
+            const size = readU64At(block, 40, m_endian);
             const off64 = @as(u64, off32);
-            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off64, .permission = Permission.none });
+            const flags = readU32At(block, 64, m_endian);
+            const reserved1 = readU32At(block, 68, m_endian);
+            const reserved2 = readU32At(block, 72, m_endian);
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off64, .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
         } else {
-            const off32 = mem.readInt(u32, block[40..44], m_endian);
-            const size32 = mem.readInt(u32, block[36..40], m_endian);
-            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = @as(u64, size32), .file_offset = @as(u64, off32), .permission = Permission.none });
+            const off32 = readU32At(block, 40, m_endian);
+            const size32 = readU32At(block, 36, m_endian);
+            const flags = readU32At(block, 56, m_endian);
+            const reserved1 = readU32At(block, 60, m_endian);
+            const reserved2 = readU32At(block, 64, m_endian);
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = @as(u64, size32), .file_offset = @as(u64, off32), .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
         }
     }
 }
 
 fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *std.ArrayList([]const u8), lc_data: []const u8, m_endian: Endian) !void {
     if (lc_data.len < 12) return;
-    const name_off = @as(usize, mem.readInt(u32, lc_data[8..12], m_endian));
+    const name_off = @as(usize, readU32At(lc_data, 8, m_endian));
     if (name_off < lc_data.len) {
         const name = mem.sliceTo(lc_data[name_off..], 0);
         if (name.len != 0) try imports_list.append(allocator, name);
@@ -794,16 +890,27 @@ fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *std.Ar
 
 fn appendRpathMessageFromLcData(allocator: std.mem.Allocator, messages_list: *std.ArrayList(Message), lc_data: []const u8, m_endian: Endian) !void {
     if (lc_data.len < 12) return;
-    const path_off = @as(usize, mem.readInt(u32, lc_data[8..12], m_endian));
+    const path_off = @as(usize, readU32At(lc_data, 8, m_endian));
     if (path_off < lc_data.len) {
         const rp = mem.sliceTo(lc_data[path_off..], 0);
         if (rp.len != 0) try messages_list.append(allocator, Message{ .body = rp });
     }
 }
 
-fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, imports: *std.ArrayList([]const u8), exports: *std.ArrayList(Export)) !void {
+fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, sections: []const Section, indirectsymoff: usize, nindirectsyms: usize, ilocalsym: usize, nlocalsym: usize, iextdefsym: usize, nextdefsym: usize, iundefsym: usize, nundefsym: usize, imports: *std.ArrayList([]const u8), exports: *std.ArrayList(Export)) !void {
     if (nsyms == 0) return;
 
+    // silence unused LC_DYSYMTAB range parameters for now (may be used later)
+    _ = ilocalsym;
+    _ = nlocalsym;
+    _ = iextdefsym;
+    _ = nextdefsym;
+    _ = iundefsym;
+    _ = nundefsym;
+
+    // SymInfo and symInfoByIndex are defined at top-level for reuse.
+
+    // --- direct symtab parsing (existing behavior) ---
     if (m_endian == .little) {
         var nlist_entry_size: usize = 0;
         if (is64) nlist_entry_size = @sizeOf(macho.nlist_64) else nlist_entry_size = @sizeOf(macho.nlist);
@@ -873,12 +980,60 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
             }
         }
     }
+
+    // --- indirect symbol table resolution (via LC_DYSYMTAB) ---
+    if (indirectsymoff != 0 and nindirectsyms != 0) {
+        if (indirectsymoff + nindirectsyms * 4 > macho_buf.len) return;
+        const INDIRECT_INDEX_MASK: u32 = 0x3FFFFFFF;
+        var sidx: usize = 0;
+        while (sidx < sections.len) : (sidx += 1) {
+            const sec = sections[sidx];
+            const stype = sec.flags & macho.SECTION_TYPE;
+            var entry_size: usize = 4;
+            var entry_count: usize = 0;
+            if (stype == macho.S_SYMBOL_STUBS) {
+                if (sec.reserved2 == 0) continue;
+                entry_size = @as(usize, sec.reserved2);
+                entry_count = @as(usize, sec.size) / entry_size;
+            } else if (stype == macho.S_NON_LAZY_SYMBOL_POINTERS or stype == macho.S_LAZY_SYMBOL_POINTERS or stype == macho.S_LAZY_DYLIB_SYMBOL_POINTERS) {
+                entry_size = 4;
+                entry_count = @as(usize, sec.size) / 4;
+            } else {
+                sidx += 1;
+                continue;
+            }
+
+            const base_index = @as(usize, sec.reserved1);
+            var ii: usize = 0;
+            while (ii < entry_count) : (ii += 1) {
+                const indirect_idx = base_index + ii;
+                if (indirect_idx >= nindirectsyms) break;
+                const entry_off = indirectsymoff + indirect_idx * 4;
+                if (entry_off + 4 > macho_buf.len) break;
+                const entry = readU32At(macho_buf, entry_off, m_endian);
+                if ((entry & macho.INDIRECT_SYMBOL_LOCAL) != 0) continue;
+                if ((entry & macho.INDIRECT_SYMBOL_ABS) != 0) continue;
+                const sym_index = @as(usize, entry & INDIRECT_INDEX_MASK);
+                if (sym_index >= nsyms) continue;
+                const si = symInfoByIndex(macho_buf, symoff, nsyms, stroff, strsize, is64, m_endian, sym_index) orelse continue;
+                const name = si.name;
+                const n_type = si.n_type;
+                const type_ = @as(u32, n_type) & macho.N_TYPE;
+                if (type_ == macho.N_UNDF) {
+                    try imports.append(allocator, name);
+                } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
+                    try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
+                }
+            }
+            sidx += 1;
+        }
+    }
 }
 
 /// Decode a single Mach-O slice (must be little-endian for the std.macho helpers)
 fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !BinaryDescription {
     if (macho_buf.len < 4) return ParseError.TooSmall;
-    const mm = mem.readInt(u32, macho_buf[0..4], .big);
+    const mm = readU32At(macho_buf, 0, .big);
     var is_64: bool = false;
     var m_endian: Endian = Endian.little;
     if (mm == macho.MH_MAGIC_64) {
@@ -930,19 +1085,19 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
         if (is_64) {
             if (macho_buf.len < @sizeOf(macho.mach_header_64)) return ParseError.TooSmall;
             hdr_size = @sizeOf(macho.mach_header_64);
-            hdr_cputype = @as(macho.cpu_type_t, mem.readInt(i32, macho_buf[4..8], m_endian));
-            hdr_filetype = mem.readInt(u32, macho_buf[12..16], m_endian);
-            ncmds = @as(usize, mem.readInt(u32, macho_buf[16..20], m_endian));
-            sizeofcmds = @as(usize, mem.readInt(u32, macho_buf[20..24], m_endian));
-            hdr_flags = mem.readInt(u32, macho_buf[24..28], m_endian);
+            hdr_cputype = @as(macho.cpu_type_t, readI32At(macho_buf, 4, m_endian));
+            hdr_filetype = readU32At(macho_buf, 12, m_endian);
+            ncmds = @as(usize, readU32At(macho_buf, 16, m_endian));
+            sizeofcmds = @as(usize, readU32At(macho_buf, 20, m_endian));
+            hdr_flags = readU32At(macho_buf, 24, m_endian);
         } else {
             if (macho_buf.len < @sizeOf(macho.mach_header)) return ParseError.TooSmall;
             hdr_size = @sizeOf(macho.mach_header);
-            hdr_cputype = @as(macho.cpu_type_t, mem.readInt(i32, macho_buf[4..8], m_endian));
-            hdr_filetype = mem.readInt(u32, macho_buf[12..16], m_endian);
-            ncmds = @as(usize, mem.readInt(u32, macho_buf[16..20], m_endian));
-            sizeofcmds = @as(usize, mem.readInt(u32, macho_buf[20..24], m_endian));
-            hdr_flags = mem.readInt(u32, macho_buf[24..28], m_endian);
+            hdr_cputype = @as(macho.cpu_type_t, readI32At(macho_buf, 4, m_endian));
+            hdr_filetype = readU32At(macho_buf, 12, m_endian);
+            ncmds = @as(usize, readU32At(macho_buf, 16, m_endian));
+            sizeofcmds = @as(usize, readU32At(macho_buf, 20, m_endian));
+            hdr_flags = readU32At(macho_buf, 24, m_endian);
         }
     }
 
@@ -971,6 +1126,16 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
     var strsize: usize = 0;
     var entry_fileoff: u64 = 0;
     var have_entry: bool = false;
+
+    // LC_DYSYMTAB fields (indirect symbol table, ranges)
+    var indirectsymoff: usize = 0;
+    var nindirectsyms: usize = 0;
+    var ilocalsym: usize = 0;
+    var nlocalsym: usize = 0;
+    var iextdefsym: usize = 0;
+    var nextdefsym: usize = 0;
+    var iundefsym: usize = 0;
+    var nundefsym: usize = 0;
 
     if (m_endian == .little) {
         var lc_it: macho.LoadCommandIterator = .{ .ncmds = ncmds, .buffer = lc_buffer, .index = 0 };
@@ -1018,6 +1183,16 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
                 nsyms = @as(usize, st.nsyms);
                 stroff = @as(usize, st.stroff);
                 strsize = @as(usize, st.strsize);
+            } else if (cmd == macho.LC.DYSYMTAB) {
+                const dt = lc.cast(macho.dysymtab_command) orelse continue;
+                ilocalsym = @as(usize, dt.ilocalsym);
+                nlocalsym = @as(usize, dt.nlocalsym);
+                iextdefsym = @as(usize, dt.iextdefsym);
+                nextdefsym = @as(usize, dt.nextdefsym);
+                iundefsym = @as(usize, dt.iundefsym);
+                nundefsym = @as(usize, dt.nundefsym);
+                indirectsymoff = @as(usize, dt.indirectsymoff);
+                nindirectsyms = @as(usize, dt.nindirectsyms);
             } else if (cmd == macho.LC.MAIN) {
                 const ep = lc.cast(macho.entry_point_command) orelse continue;
                 entry_fileoff = ep.entryoff;
@@ -1052,20 +1227,19 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
             const lc_data = macho_buf[off .. off + cmdsize];
 
             if (opt_cmd) |cmd| {
-
                 if (cmd == macho.LC.SEGMENT_64 and is_64) {
                     // segment_command_64 layout (big-endian): cmd/cmdsize (0..8), segname (8..24), vmaddr (24..32), vmsize (32..40), fileoff (40..48), filesize (48..56), maxprot (56..60), initprot (60..64), nsects (64..68), flags (68..72)
-                    const seg_fileoff = mem.readInt(u64, lc_data[40..48], m_endian);
-                    const seg_filesize = mem.readInt(u64, lc_data[48..56], m_endian);
-                    const vmaddr = mem.readInt(u64, lc_data[24..32], m_endian);
-                    const initprot = @as(macho.vm_prot_t, mem.readInt(i32, lc_data[60..64], m_endian));
+                    const seg_fileoff = readU64At(lc_data, 40, m_endian);
+                    const seg_filesize = readU64At(lc_data, 48, m_endian);
+                    const vmaddr = readU64At(lc_data, 24, m_endian);
+                    const initprot = @as(macho.vm_prot_t, readI32At(lc_data, 60, m_endian));
                     const perm = machoProtToPermission(initprot);
                     try appendSegmentAndMap(allocator, &segments_list, &segmaps, seg_fileoff, seg_filesize, vmaddr, perm);
 
                     const section_size = @sizeOf(macho.section_64);
                     const sections_data = lc_data[@sizeOf(macho.segment_command_64)..];
                     var i: usize = 0;
-                    const nsects = @as(usize, mem.readInt(u32, lc_data[64..68], m_endian));
+                    const nsects = @as(usize, readU32At(lc_data, 64, m_endian));
                     while (i < nsects) : (i += 1) {
                         const start = i * section_size;
                         if (start + section_size > sections_data.len) break;
@@ -1074,17 +1248,17 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
                     }
                 } else if (cmd == macho.LC.SEGMENT and !is_64) {
                     // segment_command (32-bit): cmd/cmdsize (0..8), segname (8..24), vmaddr (24..28), vmsize (28..32), fileoff (32..36), filesize (36..40), maxprot (40..44), initprot (44..48), nsects (48..52), flags (52..56)
-                    const seg_fileoff = @as(u64, mem.readInt(u32, lc_data[32..36], m_endian));
-                    const seg_filesize = @as(u64, mem.readInt(u32, lc_data[36..40], m_endian));
-                    const vmaddr = @as(u64, mem.readInt(u32, lc_data[24..28], m_endian));
-                    const initprot = @as(macho.vm_prot_t, mem.readInt(i32, lc_data[44..48], m_endian));
+                    const seg_fileoff = @as(u64, readU32At(lc_data, 32, m_endian));
+                    const seg_filesize = @as(u64, readU32At(lc_data, 36, m_endian));
+                    const vmaddr = @as(u64, readU32At(lc_data, 24, m_endian));
+                    const initprot = @as(macho.vm_prot_t, readI32At(lc_data, 44, m_endian));
                     const perm = machoProtToPermission(initprot);
                     try appendSegmentAndMap(allocator, &segments_list, &segmaps, seg_fileoff, seg_filesize, vmaddr, perm);
 
                     const section_size = @sizeOf(macho.section);
                     const sections_data = lc_data[@sizeOf(macho.segment_command)..];
                     var i: usize = 0;
-                    const nsects = @as(usize, mem.readInt(u32, lc_data[48..52], m_endian));
+                    const nsects = @as(usize, readU32At(lc_data, 48, m_endian));
                     while (i < nsects) : (i += 1) {
                         const start = i * section_size;
                         if (start + section_size > sections_data.len) break;
@@ -1092,12 +1266,12 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
                         try appendSectionFromBlock(allocator, &sections_list, block, false, m_endian);
                     }
                 } else if (cmd == macho.LC.SYMTAB) {
-                    symoff = @as(usize, mem.readInt(u32, lc_data[8..12], m_endian));
-                    nsyms = @as(usize, mem.readInt(u32, lc_data[12..16], m_endian));
-                    stroff = @as(usize, mem.readInt(u32, lc_data[16..20], m_endian));
-                    strsize = @as(usize, mem.readInt(u32, lc_data[20..24], m_endian));
+                    symoff = @as(usize, readU32At(lc_data, 8, m_endian));
+                    nsyms = @as(usize, readU32At(lc_data, 12, m_endian));
+                    stroff = @as(usize, readU32At(lc_data, 16, m_endian));
+                    strsize = @as(usize, readU32At(lc_data, 20, m_endian));
                 } else if (cmd == macho.LC.MAIN) {
-                    entry_fileoff = mem.readInt(u64, lc_data[8..16], m_endian);
+                    entry_fileoff = readU64At(lc_data, 8, m_endian);
                     have_entry = true;
                 } else {
                     if (cmd == macho.LC.LOAD_DYLIB or cmd == macho.LC.LOAD_WEAK_DYLIB or cmd == macho.LC.REEXPORT_DYLIB or cmd == macho.LC.LOAD_UPWARD_DYLIB) {
@@ -1118,7 +1292,7 @@ fn decodeMachoSlice(allocator: std.mem.Allocator, macho_buf: []const u8) !Binary
         }
     }
 
-    try parseSymtab(allocator, macho_buf, symoff, nsyms, stroff, strsize, is_64, m_endian, &imports, &exports);
+    try parseSymtab(allocator, macho_buf, symoff, nsyms, stroff, strsize, is_64, m_endian, sections_list.items, indirectsymoff, nindirectsyms, ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym, &imports, &exports);
 
     // Translate entry file offset -> virtual address using segment maps
     var entry_va: u64 = 0;
@@ -1185,14 +1359,14 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     try fr.interface.fill(file_size);
 
     // Decide whether this is a FAT container or a thin Mach-O
-    const magic = mem.readInt(u32, file_buf[0..4], .big);
+    const magic = readU32At(file_buf, 0, .big);
     var bundle_list = try std.ArrayList(BinaryDescription).initCapacity(allocator, 0);
     defer bundle_list.deinit(allocator);
 
     if (magic == macho.FAT_MAGIC or magic == macho.FAT_CIGAM or magic == macho.FAT_MAGIC_64 or magic == macho.FAT_CIGAM_64) {
         const fat_endian: Endian = if (magic == macho.FAT_CIGAM or magic == macho.FAT_CIGAM_64) Endian.little else Endian.big;
         if (file_buf.len < @sizeOf(macho.fat_header)) return ParseError.TooSmall;
-        const nfat = @as(usize, mem.readInt(u32, file_buf[4..8], fat_endian));
+        const nfat = @as(usize, readU32At(file_buf, 4, fat_endian));
         if (nfat == 0) return ParseError.Malformed;
         const arch_off = @sizeOf(macho.fat_header);
         const arch_size = @sizeOf(macho.fat_arch);
@@ -1209,7 +1383,7 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
 
             if (off32 + sz32 <= file_buf.len) {
                 const slice = file_buf[off32 .. off32 + sz32];
-                const mm = mem.readInt(u32, slice[0..4], .big);
+                const mm = readU32At(slice, 0, .big);
                 // Quick check: only attempt to decode little-endian slices here.
                 if (mm == macho.MH_CIGAM_64 or mm == macho.MH_CIGAM) {
                     // little-endian slices - try decode

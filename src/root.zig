@@ -696,7 +696,72 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         }
     }
 
-    const desc = BinaryDescription{
+    // --- Symbol table parsing: SHT_SYMTAB and SHT_DYNSYM ---
+    var sh_iter_sym = header.iterateSectionHeadersBuffer(file_buf);
+    var sh_index: usize = 0;
+    while (true) {
+        const sh = try sh_iter_sym.next() orelse break;
+        if (sh.sh_type == elf.SHT_SYMTAB or sh.sh_type == elf.SHT_DYNSYM) {
+            const sym_off = @as(usize, sh.sh_offset);
+            const sym_sz = @as(usize, sh.sh_size);
+            var entsz = @as(usize, sh.sh_entsize);
+            if (entsz == 0) entsz = if (header.is_64) @sizeOf(elf.Elf64_Sym) else @sizeOf(elf.Elf32_Sym);
+            if (entsz == 0) continue;
+            const nsyms = if (entsz != 0) sym_sz / entsz else 0;
+            if (nsyms == 0) continue;
+
+            // Find linked string table (sh_link is the section index of the strtab)
+            var strtab_off: usize = 0;
+            var strtab_sz: usize = 0;
+            var st_iter = header.iterateSectionHeadersBuffer(file_buf);
+            var st_idx: usize = 0;
+            while (true) {
+                const st = try st_iter.next() orelse break;
+                if (st_idx == @as(usize, sh.sh_link)) {
+                    strtab_off = @as(usize, st.sh_offset);
+                    strtab_sz = @as(usize, st.sh_size);
+                    break;
+                }
+                st_idx += 1;
+            }
+            if (strtab_off + strtab_sz > file_buf.len) continue; // malformed strtab
+            const strtab = file_buf[strtab_off .. strtab_off + strtab_sz];
+
+            // Parse symbol entries
+            var i_sym: usize = 0;
+            while (i_sym < nsyms) : (i_sym += 1) {
+                const entry_off = sym_off + i_sym * entsz;
+                if (entry_off + entsz > file_buf.len) break;
+                var rdr_sym = std.io.Reader.fixed(file_buf[entry_off ..]);
+                if (header.is_64) {
+                    const sym = try rdr_sym.takeStruct(elf.Elf64_Sym, header.endian);
+                    const name_idx = @as(usize, sym.st_name);
+                    if (name_idx >= strtab.len) continue;
+                    const name = mem.sliceTo(strtab[name_idx ..], 0);
+                    if (sym.st_shndx == elf.SHN_UNDEF) {
+                        if (name.len != 0) try imports.append(allocator, name);
+                    } else {
+                        const kind = if (sym.st_type() == elf.STT_FUNC) ExportKind.function else ExportKind.variable;
+                        if (name.len != 0) try exports.append(allocator, Export{ .name = name, .kind = kind });
+                    }
+                } else {
+                    const sym32 = try rdr_sym.takeStruct(elf.Elf32_Sym, header.endian);
+                    const name_idx = @as(usize, sym32.st_name);
+                    if (name_idx >= strtab.len) continue;
+                    const name = mem.sliceTo(strtab[name_idx ..], 0);
+                    if (sym32.st_shndx == elf.SHN_UNDEF) {
+                        if (name.len != 0) try imports.append(allocator, name);
+                    } else {
+                        const kind = if (sym32.st_type() == elf.STT_FUNC) ExportKind.function else ExportKind.variable;
+                        if (name.len != 0) try exports.append(allocator, Export{ .name = name, .kind = kind });
+                    }
+                }
+            }
+        }
+        sh_index += 1;
+    }
+
+    
         .format = BinaryFileKind.elf,
         .os_abi = OsAbi.unknown, // map header.os_abi -> your OsAbi as needed
         .arch = arch,

@@ -1,0 +1,3 @@
+                found_gnu_stack = true;
+>>>             if ((ph.p_flags & elf.PF_X) != 0) nx_hint = Perhaps.no else nx_hint = Perhaps.yes;
+            }

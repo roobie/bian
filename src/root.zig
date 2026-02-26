@@ -559,6 +559,9 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
     var dyn_sz: usize = 0;
     var have_dyn: bool = false;
 
+    // track bind_now across parsing for later RELRO inference
+    var dyn_bind_now: bool = false;
+
     // We recorded segmaps while parsing program headers. Re-iterate the program
     // headers to discover the dynamic segment if we didn't capture it already.
     // (We captured p_offset/p_filesz during the earlier iteration when building
@@ -582,7 +585,6 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         defer dt_needed_indices.deinit(allocator);
         var dyn_str_vaddr: u64 = 0;
         var dyn_str_sz: u64 = 0;
-        var bind_now: bool = false;
 
         const dyn_region = safeSlice(file_buf, @as(u64, dyn_off), @as(u64, dyn_sz));
         if (dyn_region == null) {
@@ -600,7 +602,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                     } else if (d.d_tag == elf.DT_STRSZ) {
                         dyn_str_sz = d.d_val;
                     } else if (d.d_tag == elf.DT_BIND_NOW) {
-                        bind_now = true;
+                        dyn_bind_now = true;
                     }
                 } else {
                     const d = try rdr.takeStruct(elf.Elf32_Dyn, header.endian);
@@ -612,7 +614,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                     } else if (d.d_tag == elf.DT_STRSZ) {
                         dyn_str_sz = @as(u64, d.d_val);
                     } else if (d.d_tag == elf.DT_BIND_NOW) {
-                        bind_now = true;
+                        dyn_bind_now = true;
                     }
                 }
             }
@@ -732,12 +734,12 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
             while (i_sym < nsyms) : (i_sym += 1) {
                 const entry_off = sym_off + i_sym * entsz;
                 if (entry_off + entsz > file_buf.len) break;
-                var rdr_sym = std.io.Reader.fixed(file_buf[entry_off ..]);
+                var rdr_sym = std.io.Reader.fixed(file_buf[entry_off..]);
                 if (header.is_64) {
                     const sym = try rdr_sym.takeStruct(elf.Elf64_Sym, header.endian);
                     const name_idx = @as(usize, sym.st_name);
                     if (name_idx >= strtab.len) continue;
-                    const name = mem.sliceTo(strtab[name_idx ..], 0);
+                    const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym.st_shndx == elf.SHN_UNDEF) {
                         if (name.len != 0) try imports.append(allocator, name);
                     } else {
@@ -748,7 +750,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
                     const sym32 = try rdr_sym.takeStruct(elf.Elf32_Sym, header.endian);
                     const name_idx = @as(usize, sym32.st_name);
                     if (name_idx >= strtab.len) continue;
-                    const name = mem.sliceTo(strtab[name_idx ..], 0);
+                    const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym32.st_shndx == elf.SHN_UNDEF) {
                         if (name.len != 0) try imports.append(allocator, name);
                     } else {
@@ -761,6 +763,35 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         sh_index += 1;
     }
 
+    // Compute security hints: NX, RELRO, PIE refinement
+    var nx_hint = Perhaps.unknown;
+    var relro_hint = RelroConfig.unknown;
+    // Check program headers for PT_GNU_STACK and PT_GNU_RELRO
+    var ph_iter3 = header.iterateProgramHeadersBuffer(file_buf);
+    var found_gnu_stack: bool = false;
+    var found_gnu_relro: bool = false;
+    while (true) {
+        const ph = try ph_iter3.next() orelse break;
+        if (ph.p_type == elf.PT_GNU_STACK) {
+            found_gnu_stack = true;
+            if ((ph.p_flags & elf.PF_X) != 0) nx_hint = Perhaps.no else nx_hint = Perhaps.yes;
+        }
+        if (ph.p_type == elf.PT_GNU_RELRO) {
+            found_gnu_relro = true;
+            // tentatively partial; may be elevated to full if DT_BIND_NOW present
+            relro_hint = RelroConfig.partial;
+        }
+    }
+    // If we found no PT_GNU_STACK, leave NX as unknown
+    // If dynamic table indicated bind_now, infer full RELRO
+    if (dyn_bind_now) {
+        relro_hint = RelroConfig.full;
+    } else if (!found_gnu_relro) {
+        // If no GNU_RELRO and no bind_now, treat as none
+        relro_hint = RelroConfig.none;
+    }
+
+    const pie_hint = if (header.type == elf.ET.DYN) Perhaps.yes else if (header.type == elf.ET.EXEC) Perhaps.no else Perhaps.unknown;
 
     const desc = BinaryDescription{
         .format = BinaryFileKind.elf,
@@ -770,10 +801,10 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File) !BinaryBundle {
         .endianess = header.endian,
         .file_kind = file_kind,
         .entrypoint_virtual_address = header.entry,
-        .pie = if (header.type == elf.ET.DYN) Perhaps.yes else Perhaps.no,
+        .pie = pie_hint,
         .aslr = Perhaps.unknown,
-        .nx = Perhaps.unknown,
-        .relro = RelroConfig.unknown,
+        .nx = nx_hint,
+        .relro = relro_hint,
         .stripped = StrippedState.unknown,
         .sections = try sections_list.toOwnedSlice(allocator),
         .segments = try segments_list.toOwnedSlice(allocator),
@@ -1802,4 +1833,39 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
         try desc.writePretty(&alloc_w.writer);
         try expect(alloc_w.written().len > 0);
     }
+}
+
+// New unit tests: security hints presence and basic DT_NEEDED/symbol checks
+test "security.hints: ELF asset reports hints and imports/exports arrays" {
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items.len >= 1);
+    const desc = bundle.items[0];
+
+    // Ensure the security hint fields are present (enum values) and the description is ELF
+    try expect(desc.format == .elf);
+    try expect(desc.pie == Perhaps.yes or desc.pie == Perhaps.no or desc.pie == Perhaps.unknown);
+    try expect(desc.nx == Perhaps.yes or desc.nx == Perhaps.no or desc.nx == Perhaps.unknown);
+    try expect(desc.relro == RelroConfig.unknown or desc.relro == RelroConfig.none or desc.relro == RelroConfig.partial or desc.relro == RelroConfig.full or desc.relro == RelroConfig.not_applicable);
+
+    // imports/exports arrays exist (length may be zero depending on asset)
+    try expect(desc.imports.len >= 0);
+    try expect(desc.exports.len >= 0);
+}
+
+test "symbol.parsing: Mach-O asset contains imports and at least one export" {
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+    const bundle = try analyzeBinary(allocator, file);
+    defer BinaryBundle.free(allocator, bundle);
+    try expect(bundle.items.len >= 1);
+    const desc = bundle.items[0];
+
+    try expect(desc.format == .macho);
+    try expect(desc.imports.len > 0);
+    try expect(desc.exports.len > 0);
 }

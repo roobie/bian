@@ -1,0 +1,2 @@
+>>>     // Compute security hints: NX, RELRO, PIE refinement
+        var nx_hint = Perhaps.unknown;

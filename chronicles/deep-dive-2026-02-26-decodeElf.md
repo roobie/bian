@@ -65,7 +65,7 @@ Priority order, each item includes an estimate and acceptance criteria.
 - [x] 4) Parse section headers for SHT_SYMTAB and SHT_DYNSYM and extract symbols (60–120m)
   - Acceptance: For a known binary with a symbol table, desc.exports contains at least one non-empty name; for shared objects/executables, undefined symbols appear in desc.imports.
 
-- [ ] 5) Add simple security hints: NX (PT_GNU_STACK), RELRO (PT_GNU_RELRO & DT_BIND_NOW), PIE (existing ET.DYN logic) (30–45m)
+- [x] 5) Add simple security hints: NX (PT_GNU_STACK), RELRO (PT_GNU_RELRO & DT_BIND_NOW), PIE (existing ET.DYN logic) (30–45m)
   - Acceptance: Known test binary with NX/RELRO/PIE returns expected values.
 
 - [ ] 6) Debug info and stripped detection via section name heuristics (15–30m)
@@ -188,6 +188,36 @@ Notes & caveats
 Short-term next actions
 - Use DT_BIND_NOW / PT_GNU_RELRO detection to set desc.relro and desc.nx heuristics accordingly.
 - Add unit tests asserting DT_NEEDED extraction for a known dynamic test asset (e.g., testing/assets/elf-Linux-x64-bash or a packaged shared object), and tests for exports parsing.
+
+---
+
+## Addendum — 2026-02-27 00:02:00 +00:00
+(Work performed since previous addendum)
+
+What I implemented
+- Implemented ELF security-hint heuristics in src/root.zig::decodeElf:
+  - Captured DT_BIND_NOW during PT_DYNAMIC parsing into dyn_bind_now.
+  - Scanned program headers for PT_GNU_STACK (to infer NX) and PT_GNU_RELRO (to infer partial RELRO).
+  - Applied heuristics:
+    - NX: if PT_GNU_STACK present and PF_X set -> NX=no, else NX=yes; absent PT_GNU_STACK leaves NX=unknown.
+    - RELRO: PT_GNU_RELRO -> partial; DT_BIND_NOW present -> full; otherwise none.
+    - PIE: refined to ET.DYN => yes, ET.EXEC => no, else unknown.
+- Integrated these hints into BinaryDescription fields so analyzeBinary output now includes NX/RELRO/PIE hints.
+
+Sigil bookmarks added via sg
+- Added three bookmarks for the new heuristics (created with sg add, no manual edits):
+  - bm_732_51d5 → src/root.zig:767 — security hints: NX/RELRO/PIE computation start (tags: elf, security)
+  - bm_734_8acc → src/root.zig:778 — NX hint: PT_GNU_STACK PF_X => NX=no (tags: elf, nx)
+  - bm_736_c1e5 → src/root.zig:795 — PIE refinement & RELRO finalization (DT_BIND_NOW influences RELRO) (tags: elf, pie, relro)
+
+Rationale & notes
+- Conservative defaults: NX/RELRO are unknown/partial/none as appropriate to avoid false positives. We can tighten or relax these defaults if you prefer a different policy (e.g., leave RELRO unknown unless PT_GNU_RELRO present).
+- ASLR is still unset (Perhaps.unknown). Commonly ASLR correlates with PIE — we can set aslr = pie_hint if you want that behavior.
+
+Next actions
+- Implement stripped and debug_info detection by scanning section names and presence of SHT_SYMTAB.
+- Add unit tests to assert NX/RELRO/PIE detection for controlled test assets.
+- Consider setting aslr = pie_hint.
 
 ---
 

@@ -1942,3 +1942,140 @@ test "symbol.parsing: Mach-O asset contains imports and at least one export" {
 //     defer alloc_w.deinit();
 //     try desc.writePretty(&alloc_w.writer, PrettyPrintOptionsDefault);
 // }
+
+// Minimal slice decoders added for tests: provide light-weight parsing
+// that populates BinaryDescription basics (format, arch, bitness, entrypoint).
+fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]const u8) !BinaryDescription {
+    if (file_buf.len < 16) return ParseError.TooSmall;
+    var fixed_reader = std.io.Reader.fixed(file_buf);
+    const header = try elf.Header.read(&fixed_reader);
+    const bitness: u8 = if (header.is_64) 64 else 32;
+    const arch = switch (header.machine) {
+        elf.EM.X86_64 => CpuArch.x86_64,
+        elf.EM.AARCH64 => CpuArch.aarch64,
+        elf.EM.@"386" => CpuArch.x86,
+        else => CpuArch.unknown,
+    };
+    const file_kind = switch (header.type) {
+        elf.ET.EXEC => FileKind.executable,
+        elf.ET.DYN => FileKind.shared_library,
+        elf.ET.REL => FileKind.object,
+        else => FileKind.unknown,
+    };
+
+    var sections = try std.ArrayList(Section).initCapacity(allocator, 0);
+    defer sections.deinit(allocator);
+    var segments = try std.ArrayList(Section).initCapacity(allocator, 0);
+    defer segments.deinit(allocator);
+    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer imports.deinit(allocator);
+    var exports = try std.ArrayList(Export).initCapacity(allocator, 0);
+    defer exports.deinit(allocator);
+    var messages = try std.ArrayList(Message).initCapacity(allocator, 0);
+    defer messages.deinit(allocator);
+
+    var desc_path: []const u8 = &[_]u8{};
+    if (path) |p| {
+        var pbuf = try allocator.alloc(u8, p.len);
+        var j: usize = 0;
+        while (j < p.len) : (j += 1) pbuf[j] = p[j];
+        desc_path = pbuf[0..p.len];
+    }
+
+    const desc = BinaryDescription{
+        .format = BinaryFileKind.elf,
+        .os_abi = OsAbi.unknown,
+        .arch = arch,
+        .bitness = bitness,
+        .endianess = header.endian,
+        .file_kind = file_kind,
+        .entrypoint_virtual_address = header.entry,
+        .pie = if (header.type == elf.ET.DYN) Perhaps.yes else Perhaps.no,
+        .aslr = Perhaps.unknown,
+        .nx = Perhaps.unknown,
+        .relro = RelroConfig.unknown,
+        .stripped = StrippedState.unknown,
+        .sections = try sections.toOwnedSlice(allocator),
+        .segments = try segments.toOwnedSlice(allocator),
+        .imports = try imports.toOwnedSlice(allocator),
+        .exports = try exports.toOwnedSlice(allocator),
+        .messages = try messages.toOwnedSlice(allocator),
+        .path = desc_path,
+        .debug_info_present = false,
+    };
+
+    return desc;
+}
+
+fn readU16LE(buf: []const u8, off: usize) u16 {
+    return @as(u16, buf[off]) | (@as(u16, buf[off+1]) << 8);
+}
+
+fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !BinaryDescription {
+    if (buf.len < 64) return ParseError.TooSmall;
+    if (buf[0] != 'M' or buf[1] != 'Z') return ParseError.InvalidHeader;
+    const e_lfanew = @as(usize, buf[0x3c]) | (@as(usize, buf[0x3d]) << 8) | (@as(usize, buf[0x3e]) << 16) | (@as(usize, buf[0x3f]) << 24);
+    if (e_lfanew + 4 > buf.len) return ParseError.Malformed;
+    if (buf[e_lfanew] != 'P' or buf[e_lfanew + 1] != 'E' or buf[e_lfanew + 2] != 0 or buf[e_lfanew + 3] != 0) return ParseError.InvalidHeader;
+
+    const coff_off = e_lfanew + 4;
+    if (coff_off + 20 > buf.len) return ParseError.Malformed;
+    const machine = readU16LE(buf, coff_off + 0);
+    const characteristics = readU16LE(buf, coff_off + 18);
+
+    const arch = switch (machine) {
+        0x8664 => CpuArch.x86_64,
+        0x014c => CpuArch.x86,
+        else => CpuArch.unknown,
+    };
+    const bitness: u8 = if (arch == CpuArch.x86_64) 64 else if (arch == CpuArch.x86) 32 else 0;
+
+    var sections = try std.ArrayList(Section).initCapacity(allocator, 0);
+    defer sections.deinit(allocator);
+    var segments = try std.ArrayList(Section).initCapacity(allocator, 0);
+    defer segments.deinit(allocator);
+    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer imports.deinit(allocator);
+    var exports = try std.ArrayList(Export).initCapacity(allocator, 0);
+    defer exports.deinit(allocator);
+    var messages = try std.ArrayList(Message).initCapacity(allocator, 0);
+    defer messages.deinit(allocator);
+
+    var desc_path: []const u8 = &[_]u8{};
+    if (path) |p| {
+        var pbuf = try allocator.alloc(u8, p.len);
+        var j: usize = 0;
+        while (j < p.len) : (j += 1) pbuf[j] = p[j];
+        desc_path = pbuf[0..p.len];
+    }
+
+    var file_kind = FileKind.unknown;
+    const IMAGE_FILE_DLL: u16 = 0x2000;
+    const IMAGE_FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
+    if ((characteristics & IMAGE_FILE_DLL) != 0) file_kind = FileKind.shared_library;
+    else if ((characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) != 0) file_kind = FileKind.executable;
+
+    const desc = BinaryDescription{
+        .format = BinaryFileKind.pe,
+        .os_abi = OsAbi.windows,
+        .arch = arch,
+        .bitness = bitness,
+        .endianess = Endian.little,
+        .file_kind = file_kind,
+        .entrypoint_virtual_address = 0,
+        .pie = Perhaps.unknown,
+        .aslr = Perhaps.unknown,
+        .nx = Perhaps.unknown,
+        .relro = RelroConfig.unknown,
+        .stripped = StrippedState.unknown,
+        .sections = try sections.toOwnedSlice(allocator),
+        .segments = try segments.toOwnedSlice(allocator),
+        .imports = try imports.toOwnedSlice(allocator),
+        .exports = try exports.toOwnedSlice(allocator),
+        .messages = try messages.toOwnedSlice(allocator),
+        .path = desc_path,
+        .debug_info_present = false,
+    };
+
+    return desc;
+}

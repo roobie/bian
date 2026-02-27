@@ -2052,8 +2052,11 @@ fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u
     var file_kind = FileKind.unknown;
     const IMAGE_FILE_DLL: u16 = 0x2000;
     const IMAGE_FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
-    if ((characteristics & IMAGE_FILE_DLL) != 0) file_kind = FileKind.shared_library;
-    else if ((characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) != 0) file_kind = FileKind.executable;
+    if ((characteristics & IMAGE_FILE_DLL) != 0) {
+        file_kind = FileKind.shared_library;
+    } else if ((characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) != 0) {
+        file_kind = FileKind.executable;
+    }
 
     const desc = BinaryDescription{
         .format = BinaryFileKind.pe,

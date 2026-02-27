@@ -187,38 +187,50 @@ Notes & caveats
 
 Short-term next actions
 - Use DT_BIND_NOW / PT_GNU_RELRO detection to set desc.relro and desc.nx heuristics accordingly.
-- Add unit tests asserting DT_NEEDED extraction for a known dynamic test asset (e.g., testing/assets/elf-Linux-x64-bash or a packaged shared object), and tests for exports parsing.
+- Add unit tests to assert DT_NEEDED extraction for a known dynamic test asset (e.g., testing/assets/elf-Linux-x64-bash or a packaged shared object), and tests for exports parsing.
 
 ---
 
-## Addendum — 2026-02-27 00:02:00 +00:00
-(Work performed since previous addendum)
+## Addendum — 2026-02-27 00:05:00 +00:00
+(Work performed since previous addendum — pretty-print and path propagation)
 
 What I implemented
-- Implemented ELF security-hint heuristics in src/root.zig::decodeElf:
-  - Captured DT_BIND_NOW during PT_DYNAMIC parsing into dyn_bind_now.
-  - Scanned program headers for PT_GNU_STACK (to infer NX) and PT_GNU_RELRO (to infer partial RELRO).
-  - Applied heuristics:
-    - NX: if PT_GNU_STACK present and PF_X set -> NX=no, else NX=yes; absent PT_GNU_STACK leaves NX=unknown.
-    - RELRO: PT_GNU_RELRO -> partial; DT_BIND_NOW present -> full; otherwise none.
-    - PIE: refined to ET.DYN => yes, ET.EXEC => no, else unknown.
-- Integrated these hints into BinaryDescription fields so analyzeBinary output now includes NX/RELRO/PIE hints.
+- Reworked pretty-print behavior to make symbol enumeration opt-in, removed the global CLI mutable flag, and added an options struct:
+  - pub const PrettyPrintOptions = struct { print_symbols: bool };
+  - writePretty now takes an options argument: pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void
+  - The pretty-printer prints import/export counts by default and only enumerates names when opts.print_symbols is true.
+- Removed the global var CLI_print_symbols and migrated callers/tests to pass PrettyPrintOptionsDefault where they want the default behavior (no symbol names printed).
 
-Sigil bookmarks added via sg
-- Added three bookmarks for the new heuristics (created with sg add, no manual edits):
-  - bm_732_51d5 → src/root.zig:767 — security hints: NX/RELRO/PIE computation start (tags: elf, security)
-  - bm_734_8acc → src/root.zig:778 — NX hint: PT_GNU_STACK PF_X => NX=no (tags: elf, nx)
-  - bm_736_c1e5 → src/root.zig:795 — PIE refinement & RELRO finalization (DT_BIND_NOW influences RELRO) (tags: elf, pie, relro)
+Path propagation
+- To lead pretty-print with the file's name and path I added explicit path propagation in the analysis API:
+  - analyzeBinary now accepts an optional path param: pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle
+  - decodeElf and decodeMacho accept the path and attach an allocator-owned copy of the provided path to each BinaryDescription.path field.
+  - writePretty now prints the path first when present: "file: {s}\n".
+- Tests and internal call sites in src/root.zig were updated to pass the paths for the test assets so pretty-print output includes file: testing/assets/...
 
-Rationale & notes
-- Conservative defaults: NX/RELRO are unknown/partial/none as appropriate to avoid false positives. We can tighten or relax these defaults if you prefer a different policy (e.g., leave RELRO unknown unless PT_GNU_RELRO present).
-- ASLR is still unset (Perhaps.unknown). Commonly ASLR correlates with PIE — we can set aslr = pie_hint if you want that behavior.
+Fixes related to the above changes
+- Fixed compile errors related to path copying by replacing std.mem.copy usage with a small manual byte copy loop (portable across stdlib versions).
+- Ensured the Mach-O decode path sets the desc.path empty slice by default and fills it when the caller provided a path.
+
+Commits (local)
+- d34dbe8  pretty: add PrettyPrintOptions, print symbols opt-in; implement ELF security hints; add tests for security hints and symbol parsing
+- 1f8d71a  feat(pretty): include caller-provided path in BinaryDescription and lead pretty-print with file path; analyzeBinary accepts optional path
+- a785698  feat(api): propagate caller path into analyzeBinary and BinaryDescription; tests pass paths to pretty-print
+- 5f0121c  fix(test): manual path copy and set desc.path for Mach-O slices; make tests pass
+
+Test run summary (after fixes)
+- Ran: zig build test
+- Result: compilation succeeded and test cases ran. The tests exercise pretty-print output; sample pretty output for the ELF and Mach-O assets is present in the test run stderr (file path printed at top of each description).
+
+Notes & rationale
+- I elected to store an allocator-owned copy of the provided path on each BinaryDescription so the pretty-printer does not need access to the BinaryBundle container and so each description is self-contained for printing. BinaryBundle.free frees the per-description paths when non-empty.
+- I left canonicalization to the caller so callers can decide whether they want absolute or relative paths; analyzeBinary simply copies the provided bytes.
 
 Next actions
-- Implement stripped and debug_info detection by scanning section names and presence of SHT_SYMTAB.
-- Add unit tests to assert NX/RELRO/PIE detection for controlled test assets.
-- Consider setting aslr = pie_hint.
+- If you want absolute/normalized paths in pretty-print, call fs.cwd().realpath before opening/passing the path to analyzeBinary in CLI code.
+- Add a unit test asserting the first pretty-print line is "file: " when a path is supplied.
+- Optionally add an sg bookmark for the new path field and the leading print site.
 
 ---
 
-End of deep-dive plan and progress addendum.
+End of deep-dive plan and progress addenda.

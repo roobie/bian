@@ -1,5 +1,7 @@
 # bian
 
+See https://cosmo.zip/pub/cosmos/bin/ for interesting binaries to analyze.
+
 As for `chronicling` refer to [META.md](./chronicles/META.md).
 
 ## Cross-Platform Binary Inspector

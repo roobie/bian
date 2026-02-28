@@ -7,6 +7,7 @@ const macho = std.macho;
 const builtin = @import("builtin");
 
 const expect = std.testing.expect;
+const common = @import("common.zig");
 
 pub const ParseError = error{
     TooSmall,
@@ -16,9 +17,12 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
-/// We assume that we will fit all metadata required in this length, to
-/// successfully perform the stage 0 parsing.
-const prefix_length = 512;
+// Re-export commonly-used small helpers from common.zig so the rest of the
+// file can continue to use the short names (readU32At, readU64At, etc.).
+pub const prefix_length = common.prefix_length;
+pub const readU32At = common.readU32At;
+pub const readU64At = common.readU64At;
+pub const readI32At = common.readI32At;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
@@ -926,35 +930,6 @@ fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
     const len = @as(usize, len64);
     if (len > buf.len - off) return null;
     return buf[off .. off + len];
-}
-
-fn readU32At(buf: []const u8, off: usize, endian: Endian) u32 {
-    // Caller must ensure off + 4 <= buf.len; keep this simple and inline for speed.
-    const b0 = @as(u32, buf[off]);
-    const b1 = @as(u32, buf[off + 1]);
-    const b2 = @as(u32, buf[off + 2]);
-    const b3 = @as(u32, buf[off + 3]);
-    return if (endian == .big) (b0 << 24) | (b1 << 16) | (b2 << 8) | b3 else (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
-}
-
-fn readU64At(buf: []const u8, off: usize, endian: Endian) u64 {
-    // Caller must ensure off + 8 <= buf.len
-    const b0 = @as(u64, buf[off]);
-    const b1 = @as(u64, buf[off + 1]);
-    const b2 = @as(u64, buf[off + 2]);
-    const b3 = @as(u64, buf[off + 3]);
-    const b4 = @as(u64, buf[off + 4]);
-    const b5 = @as(u64, buf[off + 5]);
-    const b6 = @as(u64, buf[off + 6]);
-    const b7 = @as(u64, buf[off + 7]);
-    return if (endian == .big)
-        (b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32) | (b4 << 24) | (b5 << 16) | (b6 << 8) | b7
-    else
-        (b7 << 56) | (b6 << 48) | (b5 << 40) | (b4 << 32) | (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
-}
-
-fn readI32At(buf: []const u8, off: usize, endian: Endian) i32 {
-    return @bitCast(readU32At(buf, off, endian));
 }
 
 // Top-level helper to lookup symbol name and type by index (used by parseSymtab)
@@ -2008,7 +1983,7 @@ fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]c
 }
 
 fn readU16LE(buf: []const u8, off: usize) u16 {
-    return @as(u16, buf[off]) | (@as(u16, buf[off+1]) << 8);
+    return @as(u16, buf[off]) | (@as(u16, buf[off + 1]) << 8);
 }
 
 fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !BinaryDescription {

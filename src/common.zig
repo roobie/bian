@@ -62,3 +62,23 @@ pub fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
     if (len > buf.len - off) return null;
     return buf[off .. off + len];
 }
+
+pub const SectionKind = enum { unknown, code, data };
+pub const Permission = enum { read, write, execute, none };
+
+pub const Section = struct {
+    name: []const u8,
+    kind: SectionKind,
+    size: u64,
+    file_offset: u64,
+    permission: Permission,
+    // Mach-O specific metadata (0 for other formats)
+    flags: u32,
+    reserved1: u32,
+    reserved2: u32,
+};
+
+pub fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.ArrayList(Section), segmaps: *std.ArrayList(SegmentMap), fileoff: u64, filesize: u64, vmaddr: u64, perm: Permission) !void {
+    try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm, .flags = 0, .reserved1 = 0, .reserved2 = 0 });
+    try segmaps.append(allocator, SegmentMap{ .fileoff = fileoff, .filesize = filesize, .vmaddr = vmaddr });
+}

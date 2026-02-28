@@ -27,6 +27,10 @@ pub const SegmentMap = common.SegmentMap;
 pub const zslice = common.zslice;
 pub const vaddrToFileOffset = common.vaddrToFileOffset;
 pub const safeSlice = common.safeSlice;
+pub const SectionKind = common.SectionKind;
+pub const Permission = common.Permission;
+pub const Section = common.Section;
+pub const appendSegmentAndMap = common.appendSegmentAndMap;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
@@ -128,24 +132,6 @@ pub const PrettyPrintOptions = struct {
 
 pub const PrettyPrintOptionsDefault = PrettyPrintOptions{ .print_symbols = false };
 
-const SectionKind = enum {
-    unknown,
-    code,
-    data,
-};
-const Permission = enum { read, write, execute, none };
-
-const Section = struct {
-    name: []const u8,
-    kind: SectionKind,
-    size: u64,
-    file_offset: u64,
-    permission: Permission,
-    // Mach-O specific metadata (0 for other formats)
-    flags: u32,
-    reserved1: u32,
-    reserved2: u32,
-};
 const ExportKind = enum {
     unknown,
     function,
@@ -905,7 +891,6 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]c
     }
 }
 
-
 // Top-level helper to lookup symbol name and type by index (used by parseSymtab)
 const SymInfo = struct {
     name: []const u8,
@@ -1079,11 +1064,6 @@ fn elfSectionFlagsToPermission(sh_flags: u64) Permission {
 
 fn elfProgFlagsToPermission(p_flags: u32) Permission {
     return if ((p_flags & elf.PF_X) != 0) Permission.execute else if ((p_flags & elf.PF_W) != 0) Permission.write else if ((p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
-}
-
-fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.ArrayList(Section), segmaps: *std.ArrayList(SegmentMap), fileoff: u64, filesize: u64, vmaddr: u64, perm: Permission) !void {
-    try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm, .flags = 0, .reserved1 = 0, .reserved2 = 0 });
-    try segmaps.append(allocator, SegmentMap{ .fileoff = fileoff, .filesize = filesize, .vmaddr = vmaddr });
 }
 
 fn appendSectionFromBlock(allocator: std.mem.Allocator, sections_list: *std.ArrayList(Section), block: []const u8, is64: bool, m_endian: Endian) !void {

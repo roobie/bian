@@ -14,17 +14,22 @@ Next incremental move (2026-02-28): moved four additional safe helpers into src/
 - vaddrToFileOffset(file_len, segmaps, vaddr)
 - safeSlice(buf, off64, len64)
 
+Next incremental move (2026-02-28): moved Section/Permission/SectionKind and appendSegmentAndMap into src/common.zig
+- SectionKind, Permission, Section were small and safe to centralize; they were moved into common to allow appendSegmentAndMap to live in common and be reused without circular imports.
+- Implemented appendSegmentAndMap in common using the moved Section type.
+
 Rationale and notes:
 - usingnamespace is no longer part of Zig — use explicit imports and explicit aliases instead. To avoid circular imports and duplicate-symbol issues, move only a tiny set of low-risk helpers to common.zig and alias them from root.zig. This keeps the public API stable while allowing slice decoders and other modules to import common directly.
-- Changes made here are intentionally conservative to keep the test suite green at every step. By moving the most commonly used low-level helpers first, future moves (e.g., vaddrToFileOffset users) will be easier and less likely to create cycles.
+- Changes made here are intentionally conservative to keep the test suite green at every step. By moving the most commonly used low-level helpers first, future moves (e.g., appendSectionFromBlock) will be easier and less likely to create cycles.
 
 Next steps:
 1. Run tests (already run in this commit) and confirm behavior is unchanged.
-2. Move additional helpers in small batches, e.g. appendSegmentAndMap and appendSectionFromBlock next.
+2. Move appendSectionFromBlock next (single step), alias it from root, and run tests.
 3. Update src/slice_decoders.zig to depend on common.* and start implementing full return types (BinaryDescription) when ready.
 4. Add unit tests for slice decoders that operate on in-memory buffers.
 
 References:
 - Starting commit: a786c9b (feat(slice): add slice decoder placeholder and APE fixture)
-- This commit: 3b88c12 — reset baseline and extract minimal common helpers
+- This commit: 2c41277 — moved safe helpers to common
+- This commit: (in-progress) moved Section and appendSegmentAndMap to common
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

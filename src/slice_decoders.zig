@@ -25,3 +25,35 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8) ![]const u8 
     if (buf[e_lfanew] != 'P' or buf[e_lfanew + 1] != 'E') return ParseError.InvalidHeader;
     return buf; // placeholder
 }
+
+// Unit tests for the minimal slice decoder placeholders. These tests exercise
+// the in-memory slice API (no filesystem side-effects beyond reading test
+// fixtures) and assert deterministic behavior for the supplied test assets.
+
+test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 1024);
+    defer allocator.free(buf);
+
+    const header = try decodeElfSlice(allocator, buf);
+    try expect(header.is_64);
+    try expect(header.machine == elf.EM.X86_64);
+}
+
+test "slice_decoders: decodePESlice rejects non-PE file with InvalidHeader" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 512);
+    defer allocator.free(buf);
+
+    // decodePESlice should error with InvalidHeader for an ELF file
+    _ = decodePESlice(allocator, buf) catch |err| {
+        try expect(err == ParseError.InvalidHeader);
+        return;
+    };
+    // If we get here, decodePESlice didn't error as expected
+    try expect(false);
+}

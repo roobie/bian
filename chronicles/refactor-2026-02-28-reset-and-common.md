@@ -45,5 +45,6 @@ References:
 - Commit: 2a26e6e — moved Section/appendSegmentAndMap to common
 - Commit: 3afcc46 — moved appendSectionFromBlock to common
 - Commit: e55e4d2 — moved appendDylibNameFromLcData, readU16LE, and appendRpathMessageFromLcData to common and aliased from root
-- This change: added unit tests for src/slice_decoders.zig that exercise decodeElfSlice and decodePESlice using deterministic fixtures in testing/assets
+- Commit: e7449e8 — added unit tests for src/slice_decoders.zig that exercise decodeElfSlice and decodePESlice using deterministic fixtures in testing/assets
+- Commit: 7a9ce8a — exported BinaryDescription from root and updated src/slice_decoders.zig so decodeElfSlice returns BinaryDescription (first incremental slice-decoder -> BinaryDescription step)
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

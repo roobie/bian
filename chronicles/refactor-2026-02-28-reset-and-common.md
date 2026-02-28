@@ -38,3 +38,31 @@ References:
 - Commit: 2a26e6e — moved Section/appendSegmentAndMap to common
 - This commit: moved appendSectionFromBlock to common and aliased from root
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.
+## 2026-02-28 15:27:50+01:00 — moved appendSectionFromBlock into src/common.zig
+
+Action:
+- Moved appendSectionFromBlock from src/root.zig into src/common.zig and added an alias in src/root.zig (pub const appendSectionFromBlock = common.appendSectionFromBlock). Removed the original implementation from root.zig.
+
+Rationale:
+- appendSectionFromBlock is a small, self-contained Mach-O parsing helper that depends on low-level types (Section, Endian) and std.macho structures. Centralizing it in src/common.zig avoids circular import issues when other modules (notably src/slice_decoders.zig) import common. This keeps the public API stable while enabling reuse by multiple decoders without duplicating code.
+
+Implementation notes:
+- Adjusted the function to be self-contained in common.zig by referencing std.mem and std.macho explicitly and reusing the endian-aware readers (readU32At/readU64At) and the Section/Permission/SectionKind types moved into common.
+- The root module now re-exports the common symbol so existing internal calls remain unchanged.
+
+Verification:
+- Ran `zig fmt` and `zig build test` after the change. Tests executed and produced the expected sample outputs; build succeeded with no failures.
+
+Files changed (recent commits):
+- src/common.zig (appendSectionFromBlock added)
+- src/root.zig (alias added, original removed)
+- chronicles/refactor-2026-02-28-reset-and-common.md (this entry)
+
+Next steps:
+1. Move appendDylibNameFromLcData and appendRpathMessageFromLcData into src/common.zig, alias from root, and run tests after each move.
+2. Update src/slice_decoders.zig to import common and begin implementing full zero-copy BinaryDescription return types.
+3. Add targeted unit tests for slice decoders operating on in-memory fixtures.
+4. Implement decodeApe using the slice decoders and add tests using testing/assets/basename.ape.
+
+---
+

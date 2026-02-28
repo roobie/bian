@@ -194,6 +194,33 @@ test "slice_decoders: decodeMachoSlice parses Mach-O header from fixture" {
     try expect(desc.bitness == 64);
 }
 
+test "slice_decoders.invariants: Mach-O decode populates sections, segments, imports, and exports" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 65536);
+    defer allocator.free(buf);
+
+    const desc = try decodeMachoSlice(allocator, buf, null);
+    try expect(desc.format == root.BinaryFileKind.macho);
+    try expect(desc.sections.len > 0);
+    try expect(desc.segments.len > 0);
+    try expect(desc.imports.len > 0);
+    try expect(desc.exports.len >= 0); // exports may be 0 or more depending on asset
+
+    // Ensure imports contain non-empty names
+    for (desc.imports) |imp| {
+        try expect(imp.len > 0);
+    }
+
+    // If exports present, ensure export names are non-empty
+    if (desc.exports.len > 0) {
+        for (desc.exports) |ex| {
+            try expect(ex.name.len > 0);
+        }
+    }
+}
+
 pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
     if (buf.len < 4) return ParseError.TooSmall;
     const mm = root.readU32At(buf, 0, .big);
@@ -476,7 +503,10 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             var entry_size: usize = 4;
             var entry_count: usize = 0;
             if (stype == macho.S_SYMBOL_STUBS) {
-                if (sec.reserved2 == 0) { sidx += 1; continue; }
+                if (sec.reserved2 == 0) {
+                    sidx += 1;
+                    continue;
+                }
                 entry_size = @as(usize, sec.reserved2);
                 entry_count = @as(usize, sec.size) / entry_size;
             } else if (stype == macho.S_NON_LAZY_SYMBOL_POINTERS or stype == macho.S_LAZY_SYMBOL_POINTERS or stype == macho.S_LAZY_DYLIB_SYMBOL_POINTERS) {

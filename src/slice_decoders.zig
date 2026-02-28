@@ -157,10 +157,18 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     const allocator = std.testing.allocator;
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
-    const buf = try file.readToEndAlloc(allocator, 1024);
+    const buf = try file.readToEndAlloc(allocator, 65536);
     defer allocator.free(buf);
 
     const desc = try decodeElfSlice(allocator, buf, null);
+    // Free owned top-level slices from BinaryDescription after assertions
+    defer if (desc.sections.len != 0) allocator.free(desc.sections);
+    defer if (desc.segments.len != 0) allocator.free(desc.segments);
+    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.exports.len != 0) allocator.free(desc.exports);
+    defer if (desc.messages.len != 0) allocator.free(desc.messages);
+    defer if (desc.path.len != 0) allocator.free(desc.path);
+
     try expect(desc.format == root.BinaryFileKind.elf);
     try expect(desc.arch == root.CpuArch.x86_64);
     try expect(desc.bitness == 64);
@@ -170,7 +178,7 @@ test "slice_decoders: decodePESlice rejects non-PE file with InvalidHeader" {
     const allocator = std.testing.allocator;
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
-    const buf = try file.readToEndAlloc(allocator, 512);
+    const buf = try file.readToEndAlloc(allocator, 65536);
     defer allocator.free(buf);
 
     // decodePESlice should error with InvalidHeader for an ELF file
@@ -190,6 +198,14 @@ test "slice_decoders: decodeMachoSlice parses Mach-O header from fixture" {
     defer allocator.free(buf);
 
     const desc = try decodeMachoSlice(allocator, buf, null);
+    // Free top-level slices allocated by decodeMachoSlice
+    defer if (desc.sections.len != 0) allocator.free(desc.sections);
+    defer if (desc.segments.len != 0) allocator.free(desc.segments);
+    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.exports.len != 0) allocator.free(desc.exports);
+    defer if (desc.messages.len != 0) allocator.free(desc.messages);
+    defer if (desc.path.len != 0) allocator.free(desc.path);
+
     try expect(desc.format == root.BinaryFileKind.macho);
     try expect(desc.arch == root.CpuArch.x86_64);
     try expect(desc.bitness == 64);
@@ -214,18 +230,9 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
     var found_dyld_stub: bool = false;
     for (desc.imports) |imp| {
         try expect(imp.len > 0);
-        if (std.mem.indexOf(u8, imp, "printf")) |pos| {
-            _ = pos;
-            found_printf_or_malloc = true;
-        }
-        if (std.mem.indexOf(u8, imp, "malloc")) |pos| {
-            _ = pos;
-            found_printf_or_malloc = true;
-        }
-        if (std.mem.indexOf(u8, imp, "dyld_stub_binder")) |pos| {
-            _ = pos;
-            found_dyld_stub = true;
-        }
+        if (std.mem.indexOf(u8, imp, "printf")) |pos| { _ = pos; found_printf_or_malloc = true; }
+        if (std.mem.indexOf(u8, imp, "malloc")) |pos| { _ = pos; found_printf_or_malloc = true; }
+        if (std.mem.indexOf(u8, imp, "dyld_stub_binder")) |pos| { _ = pos; found_dyld_stub = true; }
     }
     try expect(found_printf_or_malloc == true);
     try expect(found_dyld_stub == true);
@@ -235,10 +242,7 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
         var found_mh_header: bool = false;
         for (desc.exports) |ex| {
             try expect(ex.name.len > 0);
-            if (std.mem.indexOf(u8, ex.name, "__mh_execute_header")) |pos| {
-                _ = pos;
-                found_mh_header = true;
-            }
+            if (std.mem.indexOf(u8, ex.name, "__mh_execute_header")) |pos| { _ = pos; found_mh_header = true; }
         }
         try expect(found_mh_header == true);
     }

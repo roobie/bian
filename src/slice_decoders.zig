@@ -12,6 +12,7 @@ const Endian = std.builtin.Endian;
 pub const ParseError = error{ TooSmall, InvalidHeader, Malformed };
 
 const root = @import("root.zig");
+const expect = std.testing.expect;
 
 pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
     if (file_buf.len < 16) return ParseError.TooSmall;
@@ -581,6 +582,14 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         else => root.FileKind.unknown,
     };
 
+    var desc_path: []const u8 = &[_]u8{};
+    if (path) |p| {
+        var pbuf = try allocator.alloc(u8, p.len);
+        var j: usize = 0;
+        while (j < p.len) : (j += 1) pbuf[j] = p[j];
+        desc_path = pbuf[0..p.len];
+    }
+
     const desc = root.BinaryDescription{
         .format = root.BinaryFileKind.macho,
         .os_abi = root.OsAbi.macos,
@@ -599,7 +608,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         .imports = try imports.toOwnedSlice(allocator),
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
-        .path = &[_]u8{},
+        .path = desc_path,
         .debug_info_present = false,
     };
 

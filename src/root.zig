@@ -8,6 +8,7 @@ const builtin = @import("builtin");
 
 const expect = std.testing.expect;
 const common = @import("common.zig");
+const slice_dec = @import("slice_decoders.zig");
 
 pub const ParseError = error{
     TooSmall,
@@ -990,7 +991,7 @@ test "decodeMachoSlice: big-endian unknown LC skipped" {
     macho_buf[off + 7] = @as(u8, cmdsize & 0xFF);
 
     const allocator = std.testing.allocator;
-    const desc = try decodeMachoSlice(allocator, macho_buf[0..total_len]);
+    const desc = try slice_dec.decodeMachoSlice(allocator, macho_buf[0..total_len], null);
     // Should succeed and produce a macho description; unknown LC is skipped.
     try expect(desc.format == .macho);
     try expect(desc.file_kind == .executable);
@@ -1496,7 +1497,7 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u
                 // Quick check: only attempt to decode little-endian slices here.
                 if (mm == macho.MH_CIGAM_64 or mm == macho.MH_CIGAM) {
                     // little-endian slices - try decode
-                    var desc = try decodeMachoSlice(allocator, slice);
+                    var desc = try slice_dec.decodeMachoSlice(allocator, slice, null);
                     // attach path copy if provided
                     if (path) |p| {
                         var pbuf = try allocator.alloc(u8, p.len);
@@ -1519,7 +1520,7 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u
         }
     } else {
         // Thin Mach-O — decode the whole file
-        var desc = try decodeMachoSlice(allocator, file_buf);
+        var desc = try slice_dec.decodeMachoSlice(allocator, file_buf, null);
         if (path) |p| {
             var pbuf = try allocator.alloc(u8, p.len);
             // copy path bytes into allocated buffer

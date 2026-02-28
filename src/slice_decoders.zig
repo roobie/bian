@@ -74,13 +74,77 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
     return desc;
 }
 
-pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8) ![]const u8 {
+pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
     if (buf.len < 64) return ParseError.TooSmall;
     if (buf[0] != 'M' or buf[1] != 'Z') return ParseError.InvalidHeader;
     const e_lfanew = @as(usize, buf[0x3c]) | (@as(usize, buf[0x3d]) << 8) | (@as(usize, buf[0x3e]) << 16) | (@as(usize, buf[0x3f]) << 24);
     if (e_lfanew + 4 > buf.len) return ParseError.Malformed;
-    if (buf[e_lfanew] != 'P' or buf[e_lfanew + 1] != 'E') return ParseError.InvalidHeader;
-    return buf; // placeholder
+    if (e_lfanew + 4 > buf.len) return ParseError.Malformed;
+    if (buf[e_lfanew] != 'P' or buf[e_lfanew + 1] != 'E' or buf[e_lfanew + 2] != 0 or buf[e_lfanew + 3] != 0) return ParseError.InvalidHeader;
+
+    const coff_off = e_lfanew + 4;
+    if (coff_off + 20 > buf.len) return ParseError.Malformed;
+    const machine = root.readU16LE(buf, coff_off + 0);
+    const characteristics = root.readU16LE(buf, coff_off + 18);
+
+    const arch = switch (machine) {
+        0x8664 => root.CpuArch.x86_64,
+        0x014c => root.CpuArch.x86,
+        else => root.CpuArch.unknown,
+    };
+    const bitness: u8 = if (arch == root.CpuArch.x86_64) 64 else if (arch == root.CpuArch.x86) 32 else 0;
+
+    var sections = try std.ArrayList(root.Section).initCapacity(allocator, 0);
+    defer sections.deinit(allocator);
+    var segments = try std.ArrayList(root.Section).initCapacity(allocator, 0);
+    defer segments.deinit(allocator);
+    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer imports.deinit(allocator);
+    var exports = try std.ArrayList(root.Export).initCapacity(allocator, 0);
+    defer exports.deinit(allocator);
+    var messages = try std.ArrayList(root.Message).initCapacity(allocator, 0);
+    defer messages.deinit(allocator);
+
+    var desc_path: []const u8 = &[_]u8{};
+    if (path) |p| {
+        var pbuf = try allocator.alloc(u8, p.len);
+        var j: usize = 0;
+        while (j < p.len) : (j += 1) pbuf[j] = p[j];
+        desc_path = pbuf[0..p.len];
+    }
+
+    var file_kind = root.FileKind.unknown;
+    const IMAGE_FILE_DLL: u16 = 0x2000;
+    const IMAGE_FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
+    if ((characteristics & IMAGE_FILE_DLL) != 0) {
+        file_kind = root.FileKind.shared_library;
+    } else if ((characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) != 0) {
+        file_kind = root.FileKind.executable;
+    }
+
+    const desc = root.BinaryDescription{
+        .format = root.BinaryFileKind.pe,
+        .os_abi = root.OsAbi.windows,
+        .arch = arch,
+        .bitness = bitness,
+        .endianess = Endian.little,
+        .file_kind = file_kind,
+        .entrypoint_virtual_address = 0,
+        .pie = root.Perhaps.unknown,
+        .aslr = root.Perhaps.unknown,
+        .nx = root.Perhaps.unknown,
+        .relro = root.RelroConfig.unknown,
+        .stripped = root.StrippedState.unknown,
+        .sections = try sections.toOwnedSlice(allocator),
+        .segments = try segments.toOwnedSlice(allocator),
+        .imports = try imports.toOwnedSlice(allocator),
+        .exports = try exports.toOwnedSlice(allocator),
+        .messages = try messages.toOwnedSlice(allocator),
+        .path = desc_path,
+        .debug_info_present = false,
+    };
+
+    return desc;
 }
 
 // Unit tests for the minimal slice decoder placeholders. These tests exercise

@@ -103,6 +103,18 @@ test "bufferedRead: base case 2 - read ELF file" {
     try expect(mem.eql(u8, "ELF", buf[1..4]));
 }
 
+const ElfHint = struct { bitness: u8, endianess: Endian };
+const MachoHint = struct { bitness: u8, endianess: Endian };
+const PeHint = struct { machine: u16, coff_header: []u8 };
+
+const Stage0ParseResult = union(BinaryFileKind) {
+    unknown,
+    elf: ElfHint,
+    macho: MachoHint,
+    pe: PeHint,
+    ape: u8,
+};
+
 pub fn detectFormat(buffer: []u8) Stage0ParseResult {
     // 1. ELF: starts with 0x7F 'E' 'L' 'F'
     if (buffer.len > 4 and buffer[0] == 0x7F and mem.eql(u8, "ELF", buffer[1..4])) {

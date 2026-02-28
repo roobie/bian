@@ -47,4 +47,5 @@ References:
 - Commit: e55e4d2 — moved appendDylibNameFromLcData, readU16LE, and appendRpathMessageFromLcData to common and aliased from root
 - Commit: e7449e8 — added unit tests for src/slice_decoders.zig that exercise decodeElfSlice and decodePESlice using deterministic fixtures in testing/assets
 - Commit: 7a9ce8a — exported BinaryDescription from root and updated src/slice_decoders.zig so decodeElfSlice returns BinaryDescription (first incremental slice-decoder -> BinaryDescription step)
+- Commit: 4a95c61 — implemented decodePESlice in src/slice_decoders.zig to return BinaryDescription (small incremental step)
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

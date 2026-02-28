@@ -139,7 +139,7 @@ pub const Export = common.Export;
 pub const Message = common.Message;
 
 /// Unified description structure
-const BinaryDescription = struct {
+pub const BinaryDescription = struct {
     // === BASICS ===
     format: BinaryFileKind,
     os_abi: OsAbi,

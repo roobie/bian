@@ -82,3 +82,46 @@ pub fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.Arr
     try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm, .flags = 0, .reserved1 = 0, .reserved2 = 0 });
     try segmaps.append(allocator, SegmentMap{ .fileoff = fileoff, .filesize = filesize, .vmaddr = vmaddr });
 }
+
+pub fn appendSectionFromBlock(allocator: std.mem.Allocator, sections_list: *std.ArrayList(Section), block: []const u8, is64: bool, m_endian: Endian) !void {
+    const name_bytes: []const u8 = block[0..16];
+    const end = std.mem.indexOfScalar(u8, name_bytes, 0) orelse name_bytes.len;
+    const name = name_bytes[0..end];
+
+    if (m_endian == .little) {
+        if (is64) {
+            const sect_struct = @as(*align(1) const std.macho.section_64, @ptrCast(block.ptr)).*;
+            const off = @as(u64, sect_struct.offset);
+            const size = sect_struct.size;
+            const flags = sect_struct.flags;
+            const reserved1 = sect_struct.reserved1;
+            const reserved2 = sect_struct.reserved2;
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
+        } else {
+            const sect_struct = @as(*align(1) const std.macho.section, @ptrCast(block.ptr)).*;
+            const off = @as(u64, sect_struct.offset);
+            const size = @as(u64, sect_struct.size);
+            const flags = sect_struct.flags;
+            const reserved1 = sect_struct.reserved1;
+            const reserved2 = sect_struct.reserved2;
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off, .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
+        }
+    } else {
+        if (is64) {
+            const off32 = readU32At(block, 48, m_endian);
+            const size = readU64At(block, 40, m_endian);
+            const off64 = @as(u64, off32);
+            const flags = readU32At(block, 64, m_endian);
+            const reserved1 = readU32At(block, 68, m_endian);
+            const reserved2 = readU32At(block, 72, m_endian);
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = size, .file_offset = off64, .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
+        } else {
+            const off32 = readU32At(block, 40, m_endian);
+            const size32 = readU32At(block, 36, m_endian);
+            const flags = readU32At(block, 56, m_endian);
+            const reserved1 = readU32At(block, 60, m_endian);
+            const reserved2 = readU32At(block, 64, m_endian);
+            try sections_list.append(allocator, Section{ .name = name, .kind = SectionKind.unknown, .size = @as(u64, size32), .file_offset = @as(u64, off32), .permission = Permission.none, .flags = flags, .reserved1 = reserved1, .reserved2 = reserved2 });
+        }
+    }
+}

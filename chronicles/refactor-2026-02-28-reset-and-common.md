@@ -18,18 +18,23 @@ Next incremental move (2026-02-28): moved Section/Permission/SectionKind and app
 - SectionKind, Permission, Section were small and safe to centralize; they were moved into common to allow appendSegmentAndMap to live in common and be reused without circular imports.
 - Implemented appendSegmentAndMap in common using the moved Section type.
 
+Next incremental move (2026-02-28): moved appendSectionFromBlock into src/common.zig
+- appendSectionFromBlock depends on Section and Endian; it was moved into common. References to std.macho and std.mem were used to keep the function self-contained in common.zig.
+
 Rationale and notes:
 - usingnamespace is no longer part of Zig — use explicit imports and explicit aliases instead. To avoid circular imports and duplicate-symbol issues, move only a tiny set of low-risk helpers to common.zig and alias them from root.zig. This keeps the public API stable while allowing slice decoders and other modules to import common directly.
-- Changes made here are intentionally conservative to keep the test suite green at every step. By moving the most commonly used low-level helpers first, future moves (e.g., appendSectionFromBlock) will be easier and less likely to create cycles.
+- Changes made here are intentionally conservative to keep the test suite green at every step. By moving the most commonly used low-level helpers first, future moves (e.g., PT_DYNAMIC parsing helpers, or full slice decoders) will be easier and less likely to create cycles.
 
 Next steps:
 1. Run tests (already run in this commit) and confirm behavior is unchanged.
-2. Move appendSectionFromBlock next (single step), alias it from root, and run tests.
+2. Continue moving additional helpers in small batches (appendDylibNameFromLcData / appendRpathMessageFromLcData next), aliasing them from root.
 3. Update src/slice_decoders.zig to depend on common.* and start implementing full return types (BinaryDescription) when ready.
 4. Add unit tests for slice decoders that operate on in-memory buffers.
 
 References:
 - Starting commit: a786c9b (feat(slice): add slice decoder placeholder and APE fixture)
-- This commit: 2c41277 — moved safe helpers to common
-- This commit: (in-progress) moved Section and appendSegmentAndMap to common
+- Commit: 3b88c12 — reset baseline and extract minimal common helpers
+- Commit: 2c41277 — moved safe helpers to common
+- Commit: 2a26e6e — moved Section/appendSegmentAndMap to common
+- This commit: moved appendSectionFromBlock to common and aliased from root
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

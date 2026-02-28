@@ -23,6 +23,10 @@ pub const prefix_length = common.prefix_length;
 pub const readU32At = common.readU32At;
 pub const readU64At = common.readU64At;
 pub const readI32At = common.readI32At;
+pub const SegmentMap = common.SegmentMap;
+pub const zslice = common.zslice;
+pub const vaddrToFileOffset = common.vaddrToFileOffset;
+pub const safeSlice = common.safeSlice;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
@@ -901,36 +905,6 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]c
     }
 }
 
-const SegmentMap = struct { fileoff: u64, filesize: u64, vmaddr: u64 };
-
-fn zslice(bytes: []const u8) []const u8 {
-    const end = mem.indexOfScalar(u8, bytes, 0) orelse bytes.len;
-    return bytes[0..end];
-}
-
-fn vaddrToFileOffset(file_len: usize, segmaps: []const SegmentMap, vaddr: u64) ?usize {
-    var i: usize = 0;
-    while (i < segmaps.len) : (i += 1) {
-        const m = segmaps[i];
-        // Check whether vaddr lies within the segment's vm range (file-backed portion)
-        if (vaddr >= m.vmaddr and vaddr < m.vmaddr + m.filesize) {
-            const off64 = m.fileoff + (vaddr - m.vmaddr);
-            if (off64 <= @as(u64, file_len)) return @as(usize, off64);
-            return null;
-        }
-    }
-    return null;
-}
-
-fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
-    // Bounds-check and avoid overflow when computing start+len
-    if (off64 > @as(u64, buf.len)) return null;
-    const off = @as(usize, off64);
-    if (len64 > @as(u64, buf.len)) return null;
-    const len = @as(usize, len64);
-    if (len > buf.len - off) return null;
-    return buf[off .. off + len];
-}
 
 // Top-level helper to lookup symbol name and type by index (used by parseSymtab)
 const SymInfo = struct {

@@ -33,3 +33,32 @@ pub fn readU64At(buf: []const u8, off: usize, endian: Endian) u64 {
 pub fn readI32At(buf: []const u8, off: usize, endian: Endian) i32 {
     return @bitCast(readU32At(buf, off, endian));
 }
+
+pub const SegmentMap = struct { fileoff: u64, filesize: u64, vmaddr: u64 };
+
+pub fn zslice(bytes: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, bytes, 0) orelse bytes.len;
+    return bytes[0..end];
+}
+
+pub fn vaddrToFileOffset(file_len: usize, segmaps: []const SegmentMap, vaddr: u64) ?usize {
+    var i: usize = 0;
+    while (i < segmaps.len) : (i += 1) {
+        const m = segmaps[i];
+        if (vaddr >= m.vmaddr and vaddr < m.vmaddr + m.filesize) {
+            const off64 = m.fileoff + (vaddr - m.vmaddr);
+            if (off64 <= @as(u64, file_len)) return @as(usize, off64);
+            return null;
+        }
+    }
+    return null;
+}
+
+pub fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
+    if (off64 > @as(u64, buf.len)) return null;
+    const off = @as(usize, off64);
+    if (len64 > @as(u64, buf.len)) return null;
+    const len = @as(usize, len64);
+    if (len > buf.len - off) return null;
+    return buf[off .. off + len];
+}

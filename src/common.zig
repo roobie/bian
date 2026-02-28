@@ -225,3 +225,250 @@ pub fn symInfoByIndex(macho_buf: []const u8, symoff: usize, nsyms: usize, stroff
         return SymInfo{ .name = name, .n_type = n_type };
     }
 }
+
+// === Canonical types (moved from root.zig) ===
+
+pub const BinaryFileKind = enum {
+    unknown,
+    elf,
+    macho,
+    pe,
+    ape,
+};
+
+pub const OsAbi = enum {
+    unknown,
+    linux,
+    macos,
+    windows,
+};
+
+pub const CpuArch = enum {
+    unknown,
+    x86,
+    x86_64,
+    armv7,
+    aarch64,
+};
+
+pub const FileKind = enum {
+    unknown,
+    executable,
+    shared_library,
+    object,
+};
+
+pub const Perhaps = enum {
+    unknown,
+    yes,
+    no,
+};
+
+pub const RelroConfig = enum {
+    unknown,
+    none,
+    partial,
+    full,
+    not_applicable,
+};
+
+pub const StrippedState = enum {
+    unknown,
+    yes,
+    no,
+    partial,
+};
+
+pub const PrettyPrintOptions = struct {
+    print_symbols: bool,
+};
+
+pub const PrettyPrintOptionsDefault = PrettyPrintOptions{ .print_symbols = false };
+
+/// Unified description structure (canonical type used across the codebase)
+pub const BinaryDescription = struct {
+    // === BASICS ===
+    format: BinaryFileKind,
+    os_abi: OsAbi,
+    arch: CpuArch,
+    bitness: u8,
+    endianess: Endian,
+    file_kind: FileKind,
+    entrypoint_virtual_address: u64,
+
+    // === SECURITY FEATURES ===
+    pie: Perhaps,
+    aslr: Perhaps,
+    nx: Perhaps,
+    relro: RelroConfig,
+    stripped: StrippedState,
+
+    // === STRUCTURAL ===
+    sections: []Section,
+    segments: []Section,
+    imports: [][]const u8,
+    exports: []Export,
+
+    messages: []Message,
+
+    // optional path provided by the caller to analyzeBinary (canonicalization
+    // left to caller). If empty, path is unknown.
+    path: []const u8,
+
+    debug_info_present: bool,
+
+    pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void {
+        // If path supplied, print it first
+        if (self.path.len != 0) {
+            try w.print("file: {s}\n", .{self.path});
+        }
+
+        // Short helpers and mappings
+        const fmt_str = switch (self.format) {
+            BinaryFileKind.elf => "elf",
+            BinaryFileKind.macho => "macho",
+            BinaryFileKind.pe => "pe",
+            BinaryFileKind.ape => "ape",
+            else => "unknown",
+        };
+        try w.print("format: {s}\n", .{fmt_str});
+
+        const os_str = switch (self.os_abi) {
+            OsAbi.linux => "linux",
+            OsAbi.macos => "macos",
+            OsAbi.windows => "windows",
+            else => "unknown",
+        };
+        try w.print("os_abi: {s}\n", .{os_str});
+
+        const arch_str = switch (self.arch) {
+            CpuArch.x86 => "x86",
+            CpuArch.x86_64 => "x86_64",
+            CpuArch.armv7 => "armv7",
+            CpuArch.aarch64 => "aarch64",
+            else => "unknown",
+        };
+        const endian_str = switch (self.endianess) {
+            Endian.little => "little",
+            Endian.big => "big",
+        };
+        try w.print("arch: {s} / {d}-bit / {s}\n", .{ arch_str, self.bitness, endian_str });
+
+        const file_kind_str = switch (self.file_kind) {
+            FileKind.executable => "executable",
+            FileKind.shared_library => "shared_library",
+            FileKind.object => "object",
+            else => "unknown",
+        };
+        try w.print("file_kind: {s}\n", .{file_kind_str});
+        try w.print("entrypoint: 0x{x}\n", .{self.entrypoint_virtual_address});
+
+        const pie_str = switch (self.pie) {
+            Perhaps.yes => "yes",
+            Perhaps.no => "no",
+            else => "unknown",
+        };
+        const aslr_str = switch (self.aslr) {
+            Perhaps.yes => "yes",
+            Perhaps.no => "no",
+            else => "unknown",
+        };
+        const nx_str = switch (self.nx) {
+            Perhaps.yes => "yes",
+            Perhaps.no => "no",
+            else => "unknown",
+        };
+        const relro_str = switch (self.relro) {
+            RelroConfig.unknown => "unknown",
+            RelroConfig.none => "none",
+            RelroConfig.partial => "partial",
+            RelroConfig.full => "full",
+            RelroConfig.not_applicable => "n/a",
+        };
+        const stripped_str = switch (self.stripped) {
+            StrippedState.unknown => "unknown",
+            StrippedState.yes => "yes",
+            StrippedState.no => "no",
+            StrippedState.partial => "partial",
+        };
+        try w.print("security: PIE={s}, ASLR={s}, NX={s}, RELRO={s}, stripped={s}\n", .{ pie_str, aslr_str, nx_str, relro_str, stripped_str });
+
+        try w.print("sections: {d}\n", .{self.sections.len});
+        var i: usize = 0;
+        for (self.sections) |sec| {
+            const name = if (sec.name.len != 0) sec.name else "(unnamed)";
+            const perm_str = switch (sec.permission) {
+                Permission.read => "r",
+                Permission.write => "w",
+                Permission.execute => "x",
+                else => "-",
+            };
+            try w.print("  [{d}] {s} size={d} offset=0x{x} perm={s}\n", .{ i, name, sec.size, sec.file_offset, perm_str });
+            i += 1;
+        }
+
+        try w.print("segments: {d}\n", .{self.segments.len});
+        i = 0;
+        for (self.segments) |seg| {
+            const perm_str = switch (seg.permission) {
+                Permission.read => "r",
+                Permission.write => "w",
+                Permission.execute => "x",
+                else => "-",
+            };
+            try w.print("  [{d}] offset=0x{x} size={d} perm={s}\n", .{ i, seg.file_offset, seg.size, perm_str });
+            i += 1;
+        }
+
+        try w.print("imports: {d}\n", .{self.imports.len});
+        if (opts.print_symbols) {
+            for (self.imports) |imp| {
+                try w.print("  - {s}\n", .{imp});
+            }
+        }
+
+        try w.print("exports: {d}\n", .{self.exports.len});
+        if (opts.print_symbols) {
+            for (self.exports) |ex| {
+                const kind_str = switch (ex.kind) {
+                    ExportKind.function => "function",
+                    ExportKind.variable => "variable",
+                    else => "unknown",
+                };
+                try w.print("  - {s} ({s})\n", .{ ex.name, kind_str });
+            }
+        }
+
+        try w.print("messages: {d}\n", .{self.messages.len});
+        for (self.messages) |m| {
+            try w.print("  - {s}\n", .{m.body});
+        }
+
+        try w.print("debug_info_present: {s}\n", .{if (self.debug_info_present) "yes" else "no"});
+    }
+};
+
+/// An owning container for one-or-more BinaryDescription items and the
+/// backing file buffer that all item slices point into (zero-copy).
+pub const BinaryBundle = struct {
+    items: []BinaryDescription,
+    backing_file: []u8,
+
+    pub fn free(allocator: std.mem.Allocator, self: BinaryBundle) void {
+        // Free per-description owned slices
+        for (self.items) |d| {
+            // Free top-level slices allocated with toOwnedSlice()
+            if (d.sections.len != 0) allocator.free(d.sections);
+            if (d.segments.len != 0) allocator.free(d.segments);
+            if (d.imports.len != 0) allocator.free(d.imports);
+            if (d.exports.len != 0) allocator.free(d.exports);
+            if (d.messages.len != 0) allocator.free(d.messages);
+            // Free per-description path if present
+            if (d.path.len != 0) allocator.free(d.path);
+        }
+        // Free the items slice itself
+        if (self.items.len != 0) allocator.free(self.items);
+        // Finally free the backing file buffer
+        if (self.backing_file.len != 0) allocator.free(self.backing_file);
+    }
+};

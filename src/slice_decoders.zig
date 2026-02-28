@@ -288,6 +288,16 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
     var entry_fileoff: u64 = 0;
     var have_entry: bool = false;
 
+    // LC_DYSYMTAB fields (indirect symbol table, ranges)
+    var indirectsymoff: usize = 0;
+    var nindirectsyms: usize = 0;
+    var ilocalsym: usize = 0;
+    var nlocalsym: usize = 0;
+    var iextdefsym: usize = 0;
+    var nextdefsym: usize = 0;
+    var iundefsym: usize = 0;
+    var nundefsym: usize = 0;
+
     // Little-endian parsing using std.macho helpers where possible
     if (m_endian == .little) {
         var lc_it: macho.LoadCommandIterator = .{ .ncmds = ncmds, .buffer = lc_buffer, .index = 0 };
@@ -335,7 +345,14 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                 strsize = @as(usize, st.strsize);
             } else if (cmd == macho.LC.DYSYMTAB) {
                 const dt = lc.cast(macho.dysymtab_command) orelse continue;
-                // Keep dysymtab fields for later symbolic resolution (not resolved in this step)
+                ilocalsym = @as(usize, dt.ilocalsym);
+                nlocalsym = @as(usize, dt.nlocalsym);
+                iextdefsym = @as(usize, dt.iextdefsym);
+                nextdefsym = @as(usize, dt.nextdefsym);
+                iundefsym = @as(usize, dt.iundefsym);
+                nundefsym = @as(usize, dt.nundefsym);
+                indirectsymoff = @as(usize, dt.indirectsymoff);
+                nindirectsyms = @as(usize, dt.nindirectsyms);
             } else if (cmd == macho.LC.MAIN) {
                 const ep = lc.cast(macho.entry_point_command) orelse continue;
                 entry_fileoff = ep.entryoff;
@@ -432,8 +449,69 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         }
     }
 
-    // Note: we do not parse/resolve the symbol table in this incremental step —
-    // parseSymtab and indirect symbol resolution will be added later.
+    // Parse direct symbol table entries (simple, tolerant pass).
+    if (nsyms != 0) {
+        var si_idx: usize = 0;
+        while (si_idx < nsyms) : (si_idx += 1) {
+            const si = root.symInfoByIndex(buf, symoff, nsyms, stroff, strsize, is_64, m_endian, si_idx) orelse continue;
+            const name = si.name;
+            const n_type = si.n_type;
+            const type_ = @as(u32, n_type) & macho.N_TYPE;
+            if (type_ == macho.N_UNDF) {
+                try imports.append(allocator, name);
+            } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
+                try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
+            }
+        }
+    }
+
+    // Indirect symbol table resolution (via LC_DYSYMTAB)
+    if (indirectsymoff != 0 and nindirectsyms != 0) {
+        if (indirectsymoff + nindirectsyms * 4 > buf.len) return ParseError.Malformed;
+        const INDIRECT_INDEX_MASK: u32 = 0x3FFFFFFF;
+        var sidx: usize = 0;
+        while (sidx < sections_list.items.len) : (sidx += 1) {
+            const sec = sections_list.items[sidx];
+            const stype = sec.flags & macho.SECTION_TYPE;
+            var entry_size: usize = 4;
+            var entry_count: usize = 0;
+            if (stype == macho.S_SYMBOL_STUBS) {
+                if (sec.reserved2 == 0) { sidx += 1; continue; }
+                entry_size = @as(usize, sec.reserved2);
+                entry_count = @as(usize, sec.size) / entry_size;
+            } else if (stype == macho.S_NON_LAZY_SYMBOL_POINTERS or stype == macho.S_LAZY_SYMBOL_POINTERS or stype == macho.S_LAZY_DYLIB_SYMBOL_POINTERS) {
+                entry_size = 4;
+                entry_count = @as(usize, sec.size) / 4;
+            } else {
+                sidx += 1;
+                continue;
+            }
+
+            const base_index = @as(usize, sec.reserved1);
+            var ii: usize = 0;
+            while (ii < entry_count) : (ii += 1) {
+                const indirect_idx = base_index + ii;
+                if (indirect_idx >= nindirectsyms) break;
+                const entry_off = indirectsymoff + indirect_idx * 4;
+                if (entry_off + 4 > buf.len) break;
+                const entry = root.readU32At(buf, entry_off, m_endian);
+                if ((entry & macho.INDIRECT_SYMBOL_LOCAL) != 0) continue;
+                if ((entry & macho.INDIRECT_SYMBOL_ABS) != 0) continue;
+                const sym_index = @as(usize, entry & INDIRECT_INDEX_MASK);
+                if (sym_index >= nsyms) continue;
+                const si = root.symInfoByIndex(buf, symoff, nsyms, stroff, strsize, is_64, m_endian, sym_index) orelse continue;
+                const name = si.name;
+                const n_type = si.n_type;
+                const type_ = @as(u32, n_type) & macho.N_TYPE;
+                if (type_ == macho.N_UNDF) {
+                    try imports.append(allocator, name);
+                } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
+                    try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
+                }
+            }
+            sidx += 1;
+        }
+    }
 
     // Translate entry offset to virtual address using segmaps
     var entry_va: u64 = 0;

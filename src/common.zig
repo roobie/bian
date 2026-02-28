@@ -78,6 +78,17 @@ pub const Section = struct {
     reserved2: u32,
 };
 
+pub const ExportKind = enum { unknown, function, variable };
+
+pub const Export = struct {
+    name: []const u8,
+    kind: ExportKind,
+};
+
+pub const Message = struct {
+    body: []const u8,
+};
+
 pub fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.ArrayList(Section), segmaps: *std.ArrayList(SegmentMap), fileoff: u64, filesize: u64, vmaddr: u64, perm: Permission) !void {
     try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm, .flags = 0, .reserved1 = 0, .reserved2 = 0 });
     try segmaps.append(allocator, SegmentMap{ .fileoff = fileoff, .filesize = filesize, .vmaddr = vmaddr });
@@ -132,5 +143,85 @@ pub fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *st
     if (name_off < lc_data.len) {
         const name = std.mem.sliceTo(lc_data[name_off..], 0);
         if (name.len != 0) try imports_list.append(allocator, name);
+    }
+}
+
+pub fn readU16LE(buf: []const u8, off: usize) u16 {
+    return @as(u16, buf[off]) | (@as(u16, buf[off + 1]) << 8);
+}
+
+pub fn appendRpathMessageFromLcData(allocator: std.mem.Allocator, messages_list: *std.ArrayList(Message), lc_data: []const u8, m_endian: Endian) !void {
+    if (lc_data.len < 12) return;
+    const path_off = @as(usize, readU32At(lc_data, 8, m_endian));
+    if (path_off < lc_data.len) {
+        const rp = std.mem.sliceTo(lc_data[path_off..], 0);
+        if (rp.len != 0) try messages_list.append(allocator, Message{ .body = rp });
+    }
+}
+
+// --- New moves: macho helpers ---
+pub fn machoLCFromU32(val: u32) ?std.macho.LC {
+    if (val == 0x19) return std.macho.LC.SEGMENT_64; // SEGMENT_64
+    if (val == 0x1) return std.macho.LC.SEGMENT; // SEGMENT
+    if (val == 0x2) return std.macho.LC.SYMTAB; // SYMTAB
+    if (val == (0x28 | std.macho.LC_REQ_DYLD)) return std.macho.LC.MAIN; // MAIN with REQ_DYLD
+    if (val == 0x0c) return std.macho.LC.LOAD_DYLIB; // LOAD_DYLIB
+    if (val == (0x18 | std.macho.LC_REQ_DYLD)) return std.macho.LC.LOAD_WEAK_DYLIB; // LOAD_WEAK_DYLIB
+    if (val == (0x1f | std.macho.LC_REQ_DYLD)) return std.macho.LC.REEXPORT_DYLIB; // REEXPORT_DYLIB
+    if (val == (0x23 | std.macho.LC_REQ_DYLD)) return std.macho.LC.LOAD_UPWARD_DYLIB; // LOAD_UPWARD_DYLIB
+    if (val == (0x1c | std.macho.LC_REQ_DYLD)) return std.macho.LC.RPATH; // RPATH
+    if (val == 0x1d) return std.macho.LC.CODE_SIGNATURE; // CODE_SIGNATURE
+    if (val == (0x33 | std.macho.LC_REQ_DYLD)) return std.macho.LC.DYLD_EXPORTS_TRIE; // DYLD_EXPORTS_TRIE
+    if (val == 0x22) return std.macho.LC.DYLD_INFO; // DYLD_INFO
+    return null;
+}
+
+pub fn machoProtToPermission(p: std.macho.vm_prot_t) Permission {
+    return if ((p & std.macho.PROT.EXEC) != 0) Permission.execute else if ((p & std.macho.PROT.WRITE) != 0) Permission.write else if ((p & std.macho.PROT.READ) != 0) Permission.read else Permission.none;
+}
+
+// --- New moves: ELF helpers ---
+pub fn elfSectionFlagsToPermission(sh_flags: u64) Permission {
+    return if ((sh_flags & std.elf.SHF_EXECINSTR) != 0) Permission.execute else if ((sh_flags & std.elf.SHF_WRITE) != 0) Permission.write else if ((sh_flags & std.elf.SHF_ALLOC) != 0) Permission.read else Permission.none;
+}
+
+pub fn elfProgFlagsToPermission(p_flags: u32) Permission {
+    return if ((p_flags & std.elf.PF_X) != 0) Permission.execute else if ((p_flags & std.elf.PF_W) != 0) Permission.write else if ((p_flags & std.elf.PF_R) != 0) Permission.read else Permission.none;
+}
+
+// --- New moves: SymInfo and symbol helper ---
+pub const SymInfo = struct {
+    name: []const u8,
+    n_type: u8,
+};
+
+pub fn symInfoByIndex(macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, idx: usize) ?SymInfo {
+    if (idx >= nsyms) return null;
+    if (m_endian == .little) {
+        if (is64) {
+            const syms = @as([*]align(1) const std.macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
+            const sym = syms[idx];
+            const sidx = @as(usize, sym.n_strx);
+            if (sidx >= strsize) return null;
+            const name = std.mem.sliceTo(macho_buf[stroff + sidx ..], 0);
+            return SymInfo{ .name = name, .n_type = sym.n_type };
+        } else {
+            const syms = @as([*]align(1) const std.macho.nlist, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
+            const sym = syms[idx];
+            const sidx = @as(usize, sym.n_strx);
+            if (sidx >= strsize) return null;
+            const name = std.mem.sliceTo(macho_buf[stroff + sidx ..], 0);
+            return SymInfo{ .name = name, .n_type = sym.n_type };
+        }
+    } else {
+        const entry_size: usize = if (is64) 16 else 12;
+        const entry_off = symoff + idx * entry_size;
+        if (entry_off + entry_size > macho_buf.len) return null;
+        const n_strx = readU32At(macho_buf, entry_off, m_endian);
+        const n_type = macho_buf[entry_off + 4];
+        const sidx = @as(usize, n_strx);
+        if (sidx >= strsize) return null;
+        const name = std.mem.sliceTo(macho_buf[stroff + sidx ..], 0);
+        return SymInfo{ .name = name, .n_type = n_type };
     }
 }

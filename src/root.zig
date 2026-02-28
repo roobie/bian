@@ -133,20 +133,10 @@ pub const PrettyPrintOptions = struct {
 
 pub const PrettyPrintOptionsDefault = PrettyPrintOptions{ .print_symbols = false };
 
-const ExportKind = enum {
-    unknown,
-    function,
-    variable,
-};
-const Export = struct {
-    name: []const u8,
-    kind: ExportKind,
-};
+pub const ExportKind = common.ExportKind;
+pub const Export = common.Export;
 
-const Message = struct {
-    body: []const u8,
-    // level (Warning, Information, etc.)
-};
+pub const Message = common.Message;
 
 /// Unified description structure
 const BinaryDescription = struct {
@@ -893,68 +883,16 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]c
 }
 
 // Top-level helper to lookup symbol name and type by index (used by parseSymtab)
-const SymInfo = struct {
-    name: []const u8,
-    n_type: u8,
-};
+pub const SymInfo = common.SymInfo;
 
-fn symInfoByIndex(macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, idx: usize) ?SymInfo {
-    if (idx >= nsyms) return null;
-    if (m_endian == .little) {
-        if (is64) {
-            const syms = @as([*]align(1) const macho.nlist_64, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
-            const sym = syms[idx];
-            const sidx = @as(usize, sym.n_strx);
-            if (sidx >= strsize) return null;
-            const name = mem.sliceTo(macho_buf[stroff + sidx ..], 0);
-            return SymInfo{ .name = name, .n_type = sym.n_type };
-        } else {
-            const syms = @as([*]align(1) const macho.nlist, @ptrCast(macho_buf[symoff..].ptr))[0..nsyms];
-            const sym = syms[idx];
-            const sidx = @as(usize, sym.n_strx);
-            if (sidx >= strsize) return null;
-            const name = mem.sliceTo(macho_buf[stroff + sidx ..], 0);
-            return SymInfo{ .name = name, .n_type = sym.n_type };
-        }
-    } else {
-        const entry_size: usize = if (is64) 16 else 12;
-        const entry_off = symoff + idx * entry_size;
-        if (entry_off + entry_size > macho_buf.len) return null;
-        const n_strx = readU32At(macho_buf, entry_off, m_endian);
-        const n_type = macho_buf[entry_off + 4];
-        const sidx = @as(usize, n_strx);
-        if (sidx >= strsize) return null;
-        const name = mem.sliceTo(macho_buf[stroff + sidx ..], 0);
-        return SymInfo{ .name = name, .n_type = n_type };
-    }
-}
+pub const symInfoByIndex = common.symInfoByIndex;
 
 // Guarded macho.LC conversion: return null if the numeric value doesn't map
 // to any of the LC enum variants we care about. This is intentionally
 // conservative: we whitelist only the commands our parser handles and treat
 // unknown/extended values as "skip" instead of triggering a safety error.
-fn machoLCFromU32(val: u32) ?macho.LC {
-    // Note: avoid casting enum variants to integers (older Zig versions may not
-    // support the required builtin). Use the documented numeric values from
-    // std.macho for comparisons.
-    if (val == 0x19) return macho.LC.SEGMENT_64; // SEGMENT_64
-    if (val == 0x1) return macho.LC.SEGMENT; // SEGMENT
-    if (val == 0x2) return macho.LC.SYMTAB; // SYMTAB
-    if (val == (0x28 | macho.LC_REQ_DYLD)) return macho.LC.MAIN; // MAIN with REQ_DYLD
-    if (val == 0x0c) return macho.LC.LOAD_DYLIB; // LOAD_DYLIB
-    if (val == (0x18 | macho.LC_REQ_DYLD)) return macho.LC.LOAD_WEAK_DYLIB; // LOAD_WEAK_DYLIB
-    if (val == (0x1f | macho.LC_REQ_DYLD)) return macho.LC.REEXPORT_DYLIB; // REEXPORT_DYLIB
-    if (val == (0x23 | macho.LC_REQ_DYLD)) return macho.LC.LOAD_UPWARD_DYLIB; // LOAD_UPWARD_DYLIB
-    if (val == (0x1c | macho.LC_REQ_DYLD)) return macho.LC.RPATH; // RPATH
-    if (val == 0x1d) return macho.LC.CODE_SIGNATURE; // CODE_SIGNATURE
-    if (val == (0x33 | macho.LC_REQ_DYLD)) return macho.LC.DYLD_EXPORTS_TRIE; // DYLD_EXPORTS_TRIE
-    if (val == 0x22) return macho.LC.DYLD_INFO; // DYLD_INFO
-    return null;
-}
-
-fn machoProtToPermission(p: macho.vm_prot_t) Permission {
-    return if ((p & macho.PROT.EXEC) != 0) Permission.execute else if ((p & macho.PROT.WRITE) != 0) Permission.write else if ((p & macho.PROT.READ) != 0) Permission.read else Permission.none;
-}
+pub const machoLCFromU32 = common.machoLCFromU32;
+pub const machoProtToPermission = common.machoProtToPermission;
 
 // Unit test for readU32At helper
 test "readU32At: endian correctness" {
@@ -1059,24 +997,13 @@ test "decodeMachoSlice: big-endian unknown LC skipped" {
     try expect(desc.arch == .x86_64);
 }
 
-fn elfSectionFlagsToPermission(sh_flags: u64) Permission {
-    return if ((sh_flags & elf.SHF_EXECINSTR) != 0) Permission.execute else if ((sh_flags & elf.SHF_WRITE) != 0) Permission.write else if ((sh_flags & elf.SHF_ALLOC) != 0) Permission.read else Permission.none;
-}
+pub const elfSectionFlagsToPermission = common.elfSectionFlagsToPermission;
 
-fn elfProgFlagsToPermission(p_flags: u32) Permission {
-    return if ((p_flags & elf.PF_X) != 0) Permission.execute else if ((p_flags & elf.PF_W) != 0) Permission.write else if ((p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
-}
+pub const elfProgFlagsToPermission = common.elfProgFlagsToPermission;
 
 pub const appendDylibNameFromLcData = common.appendDylibNameFromLcData;
 
-fn appendRpathMessageFromLcData(allocator: std.mem.Allocator, messages_list: *std.ArrayList(Message), lc_data: []const u8, m_endian: Endian) !void {
-    if (lc_data.len < 12) return;
-    const path_off = @as(usize, readU32At(lc_data, 8, m_endian));
-    if (path_off < lc_data.len) {
-        const rp = mem.sliceTo(lc_data[path_off..], 0);
-        if (rp.len != 0) try messages_list.append(allocator, Message{ .body = rp });
-    }
-}
+pub const appendRpathMessageFromLcData = common.appendRpathMessageFromLcData;
 
 fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, sections: []const Section, indirectsymoff: usize, nindirectsyms: usize, ilocalsym: usize, nlocalsym: usize, iextdefsym: usize, nextdefsym: usize, iundefsym: usize, nundefsym: usize, imports: *std.ArrayList([]const u8), exports: *std.ArrayList(Export)) !void {
     if (nsyms == 0) return;
@@ -1887,9 +1814,7 @@ fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]c
     return desc;
 }
 
-fn readU16LE(buf: []const u8, off: usize) u16 {
-    return @as(u16, buf[off]) | (@as(u16, buf[off + 1]) << 8);
-}
+pub const readU16LE = common.readU16LE;
 
 fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !BinaryDescription {
     if (buf.len < 64) return ParseError.TooSmall;

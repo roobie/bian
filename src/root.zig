@@ -1067,7 +1067,6 @@ fn elfProgFlagsToPermission(p_flags: u32) Permission {
     return if ((p_flags & elf.PF_X) != 0) Permission.execute else if ((p_flags & elf.PF_W) != 0) Permission.write else if ((p_flags & elf.PF_R) != 0) Permission.read else Permission.none;
 }
 
-
 fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *std.ArrayList([]const u8), lc_data: []const u8, m_endian: Endian) !void {
     if (lc_data.len < 12) return;
     const name_off = @as(usize, readU32At(lc_data, 8, m_endian));

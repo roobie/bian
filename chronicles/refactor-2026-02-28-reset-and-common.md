@@ -52,4 +52,5 @@ References:
 - Commit: 0b95553 — expanded decodeMachoSlice to parse load commands, populate segments and sections, and capture basic imports/messages. Symbol table resolution (parseSymtab) deferred to a later incremental step.
 - Commit: 90fe8a1 — added direct symbol table parsing and indirect symbol resolution to slice_decoders.decodeMachoSlice; uses common.symInfoByIndex for robust symbol name lookup. Symbol handling is now integrated into the slice-decoder path.
 - Commit: cabd044 — added stronger unit tests asserting decodeMachoSlice populates sections, segments, imports, and exports (slice_decoders tests)
+- Commit: fa1688c — tightened Mach-O slice-decoder tests to assert presence of known imports/exports (look for printf/malloc, dyld_stub_binder, __mh_execute_header)
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

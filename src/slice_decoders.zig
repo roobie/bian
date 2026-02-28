@@ -1,6 +1,7 @@
 const std = @import("std");
 const elf = std.elf;
 const mem = std.mem;
+const macho = std.macho;
 const Endian = std.builtin.Endian;
 
 // Minimal, compile-friendly placeholders for slice decoders.
@@ -172,10 +173,78 @@ test "slice_decoders: decodePESlice rejects non-PE file with InvalidHeader" {
     defer allocator.free(buf);
 
     // decodePESlice should error with InvalidHeader for an ELF file
-    _ = decodePESlice(allocator, buf) catch |err| {
+    _ = decodePESlice(allocator, buf, null) catch |err| {
         try expect(err == ParseError.InvalidHeader);
         return;
     };
     // If we get here, decodePESlice didn't error as expected
     try expect(false);
+}
+
+test "slice_decoders: decodeMachoSlice parses Mach-O header from fixture" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/MachO-OSX-x64-ls", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 4096);
+    defer allocator.free(buf);
+
+    const desc = try decodeMachoSlice(allocator, buf, null);
+    try expect(desc.format == root.BinaryFileKind.macho);
+    try expect(desc.arch == root.CpuArch.x86_64);
+    try expect(desc.bitness == 64);
+}
+
+pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
+    if (buf.len < 4) return ParseError.TooSmall;
+    const mm = root.readU32At(buf, 0, .big);
+    var is_64: bool = false;
+    var m_endian: Endian = Endian.little;
+    if (mm == macho.MH_MAGIC_64) {
+        is_64 = true;
+        m_endian = Endian.big;
+    } else if (mm == macho.MH_CIGAM_64) {
+        is_64 = true;
+        m_endian = Endian.little;
+    } else if (mm == macho.MH_MAGIC) {
+        is_64 = false;
+        m_endian = Endian.big;
+    } else if (mm == macho.MH_CIGAM) {
+        is_64 = false;
+        m_endian = Endian.little;
+    } else return ParseError.InvalidHeader;
+
+    // Read cpu type (at offset 4) using endian-aware reader
+    const hdr_cputype_i32 = root.readI32At(buf, 4, m_endian);
+    const hdr_cputype = @as(macho.cpu_type_t, hdr_cputype_i32);
+
+    const arch = switch (hdr_cputype) {
+        macho.CPU_TYPE_X86_64 => root.CpuArch.x86_64,
+        macho.CPU_TYPE_ARM64 => root.CpuArch.aarch64,
+        7 => root.CpuArch.x86,
+        else => root.CpuArch.unknown,
+    };
+
+    const desc = root.BinaryDescription{
+        .format = root.BinaryFileKind.macho,
+        .os_abi = root.OsAbi.macos,
+        .arch = arch,
+        .bitness = if (is_64) 64 else 32,
+        .endianess = m_endian,
+        .file_kind = root.FileKind.unknown,
+        .entrypoint_virtual_address = 0,
+        .pie = root.Perhaps.unknown,
+        .aslr = root.Perhaps.unknown,
+        .nx = root.Perhaps.unknown,
+        .relro = root.RelroConfig.unknown,
+        .stripped = root.StrippedState.unknown,
+        .sections = &[_]root.Section{},
+        .segments = &[_]root.Section{},
+        .imports = &[_][]const u8{},
+        .exports = &[_]root.Export{},
+        .messages = &[_]root.Message{},
+        .path = &[_]u8{},
+        .debug_info_present = false,
+    };
+
+    return desc;
 }

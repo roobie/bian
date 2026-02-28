@@ -51,4 +51,5 @@ References:
 - Commit: d6cb99c — implemented decodeMachoSlice in src/slice_decoders.zig to return BinaryDescription (minimal header-only step) and added corresponding unit test
 - Commit: 0b95553 — expanded decodeMachoSlice to parse load commands, populate segments and sections, and capture basic imports/messages. Symbol table resolution (parseSymtab) deferred to a later incremental step.
 - Commit: 90fe8a1 — added direct symbol table parsing and indirect symbol resolution to slice_decoders.decodeMachoSlice; uses common.symInfoByIndex for robust symbol name lookup. Symbol handling is now integrated into the slice-decoder path.
+- Commit: cabd044 — added stronger unit tests asserting decodeMachoSlice populates sections, segments, imports, and exports (slice_decoders tests)
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

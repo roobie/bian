@@ -49,4 +49,5 @@ References:
 - Commit: 7a9ce8a — exported BinaryDescription from root and updated src/slice_decoders.zig so decodeElfSlice returns BinaryDescription (first incremental slice-decoder -> BinaryDescription step)
 - Commit: 4a95c61 — implemented decodePESlice in src/slice_decoders.zig to return BinaryDescription (small incremental step)
 - Commit: d6cb99c — implemented decodeMachoSlice in src/slice_decoders.zig to return BinaryDescription (minimal header-only step) and added corresponding unit test
+- Commit: 0b95553 — expanded decodeMachoSlice to parse load commands, populate segments and sections, and capture basic imports/messages. Symbol table resolution (parseSymtab) deferred to a later incremental step.
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.

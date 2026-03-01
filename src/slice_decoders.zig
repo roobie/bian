@@ -76,7 +76,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
 
     // For ELF we may collect undefined symbol names into a temporary list so we can
     // represent them as a single ImportEntry with empty dll (unknown origin).
-    var undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var undef_syms = try std.ArrayList(root.ImportSymbol).initCapacity(allocator, 0);
     defer undef_syms.deinit(allocator);
 
     // Collect sections
@@ -179,7 +179,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                         for (dt_needed_indices.items) |name_off| {
                             if (name_off < dynstr.len) {
                                 const s = mem.sliceTo(dynstr[name_off..], 0);
-                                if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
+                                if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_]root.ImportSymbol{} });
                             }
                         }
                     } else {
@@ -204,7 +204,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                                 for (dt_needed_indices.items) |name_off| {
                                     if (name_off < dynstr.len) {
                                         const s = mem.sliceTo(dynstr[name_off..], 0);
-                                        if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
+                                        if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_]root.ImportSymbol{} });
                                     }
                                 }
                                 found_dynstr = true;
@@ -233,7 +233,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                             for (dt_needed_indices.items) |name_off| {
                                 if (name_off < dynstr.len) {
                                     const s = mem.sliceTo(dynstr[name_off..], 0);
-                                    if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
+                                    if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_]root.ImportSymbol{} });
                                 }
                             }
                             found_dynstr2 = true;
@@ -317,7 +317,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                     if (name_idx >= strtab.len) continue;
                     const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym.st_shndx == elf.SHN_UNDEF) {
-                        if (name.len != 0) try undef_syms.append(allocator, name);
+                        if (name.len != 0) try undef_syms.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_name, .name = name, .ordinal = 0 });
                     } else {
                         const kind = if (sym.st_type() == elf.STT_FUNC) root.ExportKind.function else root.ExportKind.variable;
                         if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = kind });
@@ -328,7 +328,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                     if (name_idx >= strtab.len) continue;
                     const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym32.st_shndx == elf.SHN_UNDEF) {
-                        if (name.len != 0) try undef_syms.append(allocator, name);
+                        if (name.len != 0) try undef_syms.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_name, .name = name, .ordinal = 0 });
                     } else {
                         const kind = if (sym32.st_type() == elf.STT_FUNC) root.ExportKind.function else root.ExportKind.variable;
                         if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = kind });
@@ -432,7 +432,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
     var messages = try std.ArrayList(root.Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
 
-    var pe_undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var pe_undef_syms = try std.ArrayList(root.ImportSymbol).initCapacity(allocator, 0);
     defer pe_undef_syms.deinit(allocator);
 
     var desc_path: []const u8 = &[_]u8{};
@@ -584,7 +584,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                         const dllname = std.mem.sliceTo(buf[name_off..], 0);
                         if (dllname.len != 0) {
                             // Gather symbol names for this DLL into a temporary list
-                            var dll_symbols = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+                            var dll_symbols = try std.ArrayList(root.ImportSymbol).initCapacity(allocator, 0);
                             defer dll_symbols.deinit(allocator);
 
                             // Parse import name thunk table to collect imported symbol names
@@ -601,15 +601,16 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             if (t == 0) break;
                                             const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
                                             if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
-                                                // import by ordinal: record as a placeholder symbol and diagnostic message
-                                                try dll_symbols.append(allocator, "#ordinal");
+                                                // import by ordinal: record ordinal value and diagnostic message
+                                                const ord = @as(u32, t & 0xFFFF);
+                                                try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_ordinal, .name = &[_]u8{}, .ordinal = ord });
                                                 try messages.append(allocator, root.Message{ .body = "import by ordinal (32-bit)" });
                                             } else {
                                                 const name_rva2 = t;
                                                 if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva2))) |name_off2| {
                                                     if (name_off2 + 2 < buf.len) {
                                                         const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
-                                                        if (byname.len != 0) try dll_symbols.append(allocator, byname);
+                                                        if (byname.len != 0) try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_name, .name = byname, .ordinal = 0 });
                                                     }
                                                 } else {
                                                     try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
@@ -622,15 +623,16 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             if (t64 == 0) break;
                                             const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
                                             if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
-                                                // import by ordinal: record placeholder and diagnostic message
-                                                try dll_symbols.append(allocator, "#ordinal");
+                                                // import by ordinal: record ordinal value and diagnostic message
+                                                const ord64 = @as(u32, t64 & 0xFFFF);
+                                                try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_ordinal, .name = &[_]u8{}, .ordinal = ord64 });
                                                 try messages.append(allocator, root.Message{ .body = "import by ordinal (64-bit)" });
                                             } else {
                                                 const name_rva2 = t64;
                                                 if (root.vaddrToFileOffset(buf.len, segmaps.items, name_rva2)) |name_off2| {
                                                     if (name_off2 + 2 < buf.len) {
                                                         const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
-                                                        if (byname.len != 0) try dll_symbols.append(allocator, byname);
+                                                        if (byname.len != 0) try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_name, .name = byname, .ordinal = 0 });
                                                     }
                                                 } else {
                                                     try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
@@ -649,7 +651,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                 const syms_slice = try dll_symbols.toOwnedSlice(allocator);
                                 try imports.append(allocator, root.ImportEntry{ .dll = dllname, .symbols = syms_slice });
                             } else {
-                                try imports.append(allocator, root.ImportEntry{ .dll = dllname, .symbols = &[_][]const u8{} });
+                                try imports.append(allocator, root.ImportEntry{ .dll = dllname, .symbols = &[_]root.ImportSymbol{} });
                             }
                         }
                     }
@@ -1451,7 +1453,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
     var segmaps = try std.ArrayList(root.SegmentMap).initCapacity(allocator, 0);
     defer segmaps.deinit(allocator);
 
-    var mach_undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var mach_undef_syms = try std.ArrayList(root.ImportSymbol).initCapacity(allocator, 0);
     defer mach_undef_syms.deinit(allocator);
 
     var symoff: usize = 0;
@@ -1538,7 +1540,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             } else {
                 if (cmd == macho.LC.LOAD_DYLIB or cmd == macho.LC.LOAD_WEAK_DYLIB or cmd == macho.LC.REEXPORT_DYLIB or cmd == macho.LC.LOAD_UPWARD_DYLIB) {
                     const name = lc.getDylibPathName();
-                    if (name.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = name, .symbols = &[_][]const u8{} });
+                    if (name.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = name, .symbols = &[_]root.ImportSymbol{} });
                 } else if (cmd == macho.LC.RPATH) {
                     const rp = lc.getRpathPathName();
                     if (rp.len != 0) try messages.append(allocator, root.Message{ .body = rp });
@@ -1645,7 +1647,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             const n_type = si.n_type;
             const type_ = @as(u32, n_type) & macho.N_TYPE;
             if (type_ == macho.N_UNDF) {
-                try mach_undef_syms.append(allocator, name);
+                try mach_undef_syms.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_name, .name = name, .ordinal = 0 });
             } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                 try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
             }
@@ -1694,7 +1696,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                 const n_type = si.n_type;
                 const type_ = @as(u32, n_type) & macho.N_TYPE;
                 if (type_ == macho.N_UNDF) {
-                    try mach_undef_syms.append(allocator, name);
+                    try mach_undef_syms.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_name, .name = name, .ordinal = 0 });
                 } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                     try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
                 }

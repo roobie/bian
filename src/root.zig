@@ -404,7 +404,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                         for (dt_needed_indices.items) |name_off| {
                             if (name_off < dynstr.len) {
                                 const s = mem.sliceTo(dynstr[name_off..], 0);
-                                if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
+                                if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_]ImportSymbol{} });
                             }
                         }
                     } else {
@@ -431,7 +431,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                                 for (dt_needed_indices.items) |name_off| {
                                     if (name_off < dynstr.len) {
                                         const s = mem.sliceTo(dynstr[name_off..], 0);
-                                        if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
+                                        if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_]ImportSymbol{} });
                                     }
                                 }
                                 found_dynstr = true;
@@ -461,7 +461,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                             for (dt_needed_indices.items) |name_off| {
                                 if (name_off < dynstr.len) {
                                     const s = mem.sliceTo(dynstr[name_off..], 0);
-                                    if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
+                                    if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_]ImportSymbol{} });
                                 }
                             }
                             found_dynstr2 = true;

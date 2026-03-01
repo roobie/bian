@@ -86,7 +86,7 @@ fn elf_prop(m: Mutation) !void {
     const desc0 = try root.decodeElfSlice(allocator, orig, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
+    defer if (desc0.imports.len != 0) root.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);
@@ -176,7 +176,7 @@ fn elf_prop(m: Mutation) !void {
     // If successful, free returned slices and return
     defer if (res.sections.len != 0) allocator.free(res.sections);
     defer if (res.segments.len != 0) allocator.free(res.segments);
-    defer if (res.imports.len != 0) common.freeImportEntries(allocator, res.imports);
+    defer if (res.imports.len != 0) root.freeImportEntries(allocator, res.imports);
     defer if (res.exports.len != 0) allocator.free(res.exports);
     defer if (res.messages.len != 0) allocator.free(res.messages);
     defer if (res.path.len != 0) allocator.free(res.path);
@@ -270,7 +270,7 @@ fn pe_prop(m: PEMutation) !void {
     const res = decodePESlice(allocator, buf, null) catch |_| return;
     defer if (res.sections.len != 0) allocator.free(res.sections);
     defer if (res.segments.len != 0) allocator.free(res.segments);
-    defer if (res.imports.len != 0) common.freeImportEntries(allocator, res.imports);
+    defer if (res.imports.len != 0) root.freeImportEntries(allocator, res.imports);
     defer if (res.exports.len != 0) allocator.free(res.exports);
     defer if (res.messages.len != 0) allocator.free(res.messages);
     defer if (res.path.len != 0) allocator.free(res.path);
@@ -393,7 +393,7 @@ fn macho_prop(m: MachMutation) !void {
     const res = decodeMachoSlice(allocator, buf, null) catch |_| return;
     defer if (res.sections.len != 0) allocator.free(res.sections);
     defer if (res.segments.len != 0) allocator.free(res.segments);
-    defer if (res.imports.len != 0) common.freeImportEntries(allocator, res.imports);
+    defer if (res.imports.len != 0) root.freeImportEntries(allocator, res.imports);
     defer if (res.exports.len != 0) allocator.free(res.exports);
     defer if (res.messages.len != 0) allocator.free(res.messages);
     defer if (res.path.len != 0) allocator.free(res.path);

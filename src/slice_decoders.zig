@@ -14,6 +14,19 @@ pub const ParseError = error{ TooSmall, InvalidHeader, Malformed };
 const root = @import("root.zig");
 const expect = std.testing.expect;
 
+fn try_u64_range_to_slice(off64: u64, sz64: u64, file_len: usize) ?struct { off: usize, sz: usize } {
+    const file_len_u64 = @as(u64, file_len);
+    if (off64 > file_len_u64) return null;
+    if (sz64 > file_len_u64 - off64) return null;
+    return .{ .off = @as(usize, off64), .sz = @as(usize, sz64) };
+}
+
+fn u64_to_usize_checked(v: u64) ?usize {
+    const usize_max_u64 = @as(u64, std.math.maxInt(usize));
+    if (v > usize_max_u64) return null;
+    return @as(usize, v);
+}
+
 pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
     if (file_buf.len < 16) return ParseError.TooSmall;
     var fixed_reader = std.io.Reader.fixed(file_buf);
@@ -40,9 +53,8 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         while (true) {
             const sh = try sh_iter.next() orelse break;
             if (idx == @as(usize, header.shstrndx)) {
-                const off = @as(usize, sh.sh_offset);
-                const sz = @as(usize, sh.sh_size);
-                if (off + sz <= file_buf.len) shstrtab = file_buf[off .. off + sz];
+                const maybe_range = try_u64_range_to_slice(@as(u64, sh.sh_offset), @as(u64, sh.sh_size), file_buf.len);
+                if (maybe_range) |r| shstrtab = file_buf[r.off .. r.off + r.sz];
                 break;
             }
             idx += 1;
@@ -126,7 +138,8 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                     const d = try rdr.takeStruct(elf.Elf64_Dyn, header.endian);
                     if (d.d_tag == elf.DT_NULL) break;
                     if (d.d_tag == elf.DT_NEEDED) {
-                        try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                        const maybe_idx = u64_to_usize_checked(d.d_val);
+                        if (maybe_idx) |idx| try dt_needed_indices.append(allocator, idx) else try messages.append(allocator, root.Message{ .body = "DT_NEEDED index too large" });
                     } else if (d.d_tag == elf.DT_STRTAB) {
                         dyn_str_vaddr = d.d_val;
                     } else if (d.d_tag == elf.DT_STRSZ) {
@@ -138,7 +151,8 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                     const d = try rdr.takeStruct(elf.Elf32_Dyn, header.endian);
                     if (d.d_tag == elf.DT_NULL) break;
                     if (d.d_tag == elf.DT_NEEDED) {
-                        try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                        const maybe_idx = u64_to_usize_checked(@as(u64, d.d_val));
+                        if (maybe_idx) |idx| try dt_needed_indices.append(allocator, idx) else try messages.append(allocator, root.Message{ .body = "DT_NEEDED index too large" });
                     } else if (d.d_tag == elf.DT_STRTAB) {
                         dyn_str_vaddr = @as(u64, d.d_val);
                     } else if (d.d_tag == elf.DT_STRSZ) {
@@ -152,8 +166,11 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
             if (dyn_str_vaddr != 0 and dyn_str_sz != 0) {
                 const maybe = root.vaddrToFileOffset(file_buf.len, segmaps.items, dyn_str_vaddr);
                 if (maybe) |str_off| {
-                    if (str_off + @as(usize, dyn_str_sz) <= file_buf.len) {
-                        const dynstr = file_buf[str_off .. str_off + @as(usize, dyn_str_sz)];
+                    const dyn_str_sz_us = u64_to_usize_checked(dyn_str_sz);
+                    if (dyn_str_sz_us == null) {
+                        try messages.append(allocator, root.Message{ .body = "DT_STRSZ too large" });
+                    } else if (dyn_str_sz_us.? <= file_buf.len - str_off) {
+                        const dynstr = file_buf[str_off .. str_off + dyn_str_sz_us.?];
                         for (dt_needed_indices.items) |name_off| {
                             if (name_off < dynstr.len) {
                                 const s = mem.sliceTo(dynstr[name_off..], 0);
@@ -176,10 +193,9 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                             name_slice = tail[0..end];
                         }
                         if (name_slice.len != 0 and mem.eql(u8, name_slice, ".dynstr")) {
-                            const off = @as(usize, sh.sh_offset);
-                            const sz = @as(usize, sh.sh_size);
-                            if (off + sz <= file_buf.len) {
-                                const dynstr = file_buf[off .. off + sz];
+                            const maybe_range2 = try_u64_range_to_slice(@as(u64, sh.sh_offset), @as(u64, sh.sh_size), file_buf.len);
+                            if (maybe_range2) |r| {
+                                const dynstr = file_buf[r.off .. r.off + r.sz];
                                 for (dt_needed_indices.items) |name_off| {
                                     if (name_off < dynstr.len) {
                                         const s = mem.sliceTo(dynstr[name_off..], 0);
@@ -206,10 +222,9 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                         name_slice = tail[0..end];
                     }
                     if (name_slice.len != 0 and mem.eql(u8, name_slice, ".dynstr")) {
-                        const off = @as(usize, sh.sh_offset);
-                        const sz = @as(usize, sh.sh_size);
-                        if (off + sz <= file_buf.len) {
-                            const dynstr = file_buf[off .. off + sz];
+                        const maybe_range3 = try_u64_range_to_slice(@as(u64, sh.sh_offset), @as(u64, sh.sh_size), file_buf.len);
+                        if (maybe_range3) |r| {
+                            const dynstr = file_buf[r.off .. r.off + r.sz];
                             for (dt_needed_indices.items) |name_off| {
                                 if (name_off < dynstr.len) {
                                     const s = mem.sliceTo(dynstr[name_off..], 0);
@@ -232,13 +247,36 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
     while (true) {
         const sh = try sh_iter_sym.next() orelse break;
         if (sh.sh_type == elf.SHT_SYMTAB or sh.sh_type == elf.SHT_DYNSYM) {
-            const sym_off = @as(usize, sh.sh_offset);
-            const sym_sz = @as(usize, sh.sh_size);
-            var entsz = @as(usize, sh.sh_entsize);
-            if (entsz == 0) entsz = if (header.is_64) @sizeOf(elf.Elf64_Sym) else @sizeOf(elf.Elf32_Sym);
-            if (entsz == 0) continue;
-            const nsyms = if (entsz != 0) sym_sz / entsz else 0;
-            if (nsyms == 0) continue;
+            const sym_range = try_u64_range_to_slice(@as(u64, sh.sh_offset), @as(u64, sh.sh_size), file_buf.len);
+            var sym_off: usize = 0;
+            var sym_sz: usize = 0;
+            if (sym_range) |r| {
+                sym_off = r.off;
+                sym_sz = r.sz;
+            } else {
+                sh_index += 1;
+                continue;
+            }
+
+            var entsz_usize: usize = 0;
+            const entsz_u64 = @as(u64, sh.sh_entsize);
+            if (entsz_u64 == 0) entsz_usize = if (header.is_64) @sizeOf(elf.Elf64_Sym) else @sizeOf(elf.Elf32_Sym) else {
+                const maybe_entsz = u64_to_usize_checked(entsz_u64);
+                if (maybe_entsz == null) {
+                    sh_index += 1;
+                    continue;
+                }
+                entsz_usize = maybe_entsz.?;
+            }
+            if (entsz_usize == 0) {
+                sh_index += 1;
+                continue;
+            }
+            const nsyms = sym_sz / entsz_usize;
+            if (nsyms == 0) {
+                sh_index += 1;
+                continue;
+            }
 
             // find linked string table
             var strtab_off: usize = 0;
@@ -248,8 +286,14 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
             while (true) {
                 const st = try st_iter.next() orelse break;
                 if (st_idx == @as(usize, sh.sh_link)) {
-                    strtab_off = @as(usize, st.sh_offset);
-                    strtab_sz = @as(usize, st.sh_size);
+                    const maybe_str = try_u64_range_to_slice(@as(u64, st.sh_offset), @as(u64, st.sh_size), file_buf.len);
+                    if (maybe_str) |r| {
+                        strtab_off = r.off;
+                        strtab_sz = r.sz;
+                    } else {
+                        strtab_off = 0;
+                        strtab_sz = 0;
+                    }
                     break;
                 }
                 st_idx += 1;
@@ -259,8 +303,8 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
 
             var i_sym: usize = 0;
             while (i_sym < nsyms) : (i_sym += 1) {
-                const entry_off = sym_off + i_sym * entsz;
-                if (entry_off + entsz > file_buf.len) break;
+                const entry_off = sym_off + i_sym * entsz_usize;
+                if (entry_off + entsz_usize > file_buf.len) break;
                 var rdr_sym = std.io.Reader.fixed(file_buf[entry_off..]);
                 if (header.is_64) {
                     const sym = try rdr_sym.takeStruct(elf.Elf64_Sym, header.endian);
@@ -773,20 +817,26 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
 
 test "slice_decoders: decodePESlice errors on corrupt e_lfanew" {
     const allocator = std.testing.allocator;
-    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
-    defer file.close();
-    const buf = try file.readToEndAlloc(allocator, 16777216);
-    defer allocator.free(buf);
+    // Build synthetic minimal PE-like buffer so we can mutate e_lfanew
+    const len: usize = 256;
+    var buf = try allocator.alloc(u8, len);
+    // initialize zero
+    var k: usize = 0;
+    while (k < len) : (k += 1) buf[k] = 0;
+    buf[0] = "M"[0];
+    buf[1] = "Z"[0];
 
-    // Corrupt e_lfanew (offset 0x3c) to an out-of-range value
-    const new_e = @as(u32, buf.len) + 1;
+    // set e_lfanew to an out-of-range value (beyond buffer len)
+    const new_e: u32 = 0xFFFFFFFF;
     write_u32_le(buf, 0x3c, new_e);
 
     _ = decodePESlice(allocator, buf, null) catch |err| {
         try expect(err == ParseError.Malformed);
+        allocator.free(buf);
         return;
     };
     // If we get here, decodePESlice unexpectedly returned success
+    allocator.free(buf);
     try expect(false);
 }
 
@@ -816,7 +866,7 @@ test "slice_decoders: decodeMachoSlice errors on oversized sizeofcmds" {
     } else return;
 
     // sizeofcmds is at offset 20 in both 32-bit and 64-bit headers
-    const new_sz = @as(u32, buf.len) + 1;
+    const new_sz: u32 = 0xFFFFFFFF;
     if (m_endian == .little) {
         write_u32_le(buf, 20, new_sz);
     } else {
@@ -829,7 +879,6 @@ test "slice_decoders: decodeMachoSlice errors on oversized sizeofcmds" {
     };
     try expect(false);
 }
-
 
 test "slice_decoders: missing .dynstr section yields DT_NEEDED/no-dynstr message" {
     const allocator = std.testing.allocator;

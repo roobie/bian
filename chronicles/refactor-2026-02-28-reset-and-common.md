@@ -120,29 +120,31 @@ Next recommended steps:
 2. Consider making decodeMacho (the file-level decoder that handles FAT/thin) a thin wrapper that purely orchestrates slice_dec.decodeMachoSlice and constructs BinaryBundle; remove any lingering low-level parsing in root.
 3. Continue moving additional helpers into common as needed (keeping aliasing in root to ensure stable public API).
 
-Status: committed and tests passing locally. Review and deletion of the temporary local implementation recommended before merging the refactor into mainline.
+Status: committed and tests passing locally.
 
 ---
 
-Update — 2026-03-01 (finalized): remove temporary local Mach-O decoder from root and record alias
+Update — 2026-03-01: implement ELF DT_NEEDED mapping and symbol parsing in slice_decoders.decodeElfSlice
 
-Summary:
-- Completed the de-duplication by removing the temporary local Mach-O slice decoder (decodeMachoSlice_local) from src/root.zig and ensuring root exposes the canonical slice decoder via alias:
-  - pub const decodeMachoSlice = slice_dec.decodeMachoSlice
-- This finalizes the move of in-memory Mach-O parsing to src/slice_decoders.zig where it uses canonical types in src/common.zig and shared helpers.
+Summary of change:
+- Implemented PT_DYNAMIC parsing and DT_NEEDED/DT_STRTAB/DT_STRSZ mapping in src/slice_decoders.zig: decodeElfSlice now locates the dynamic segment, collects DT_NEEDED indices, maps DT_STRTAB VMA -> file offset using segmaps, and extracts nul-terminated library names from dynstr.
+- Added robust fallbacks: if DT_STRTAB mapping fails, decodeElfSlice searches for a .dynstr section by name and extracts DT_NEEDED entries from that section. Errors and out-of-bounds conditions append messages to the description instead of hard-failing.
+- Implemented SHT_SYMTAB and SHT_DYNSYM parsing to extract symbol names and classify them as imports (SHN_UNDEF) or exports (otherwise). The implementation handles 32/64-bit and endian variants and uses header-provided entsize with sensible fallbacks.
+- Populated security hints (PIE/NX/RELRO) using program headers (PT_GNU_STACK, PT_GNU_RELRO) and DT_BIND_NOW.
 
-Verification & hygiene:
-- Ran: zig fmt && zig build test. All tests passed locally; pretty-print output for ELF and Mach-O fixtures printed as part of the test run.
-- Updated sigil bookmarks to point at the canonical implementations in src/slice_decoders.zig and at the canonical BinaryBundle location in src/common.zig.
-
-Commit:
-- refactor(root): replace local Mach-O slice decoder with alias to slice_decoders.decodeMachoSlice; update chronicle
+Tests & verification:
+- Updated slice decoders unit tests to assert canonical fields for the ELF fixture (testing/assets/elf-Linux-x64-bash):
+  - decodeElfSlice should include DT_NEEDED entries (libc.so.6) and symbol imports (printf) in desc.imports.
+  - Security hints: PIE=no, NX=yes, RELRO=none for this fixture.
+- Ran: zig build test — all tests pass locally.
 
 Rationale:
-- Removing the duplicate implementation prevents divergence and reduces maintenance effort. Keeping a single authoritative Mach-O slice decoder in src/slice_decoders.zig makes further improvements and bug fixes simpler to apply and test.
+- Completing DT_NEEDED and symbol parsing ensures the canonical BinaryDescription captures the key structural and dependency information users expect.
+- Keeping parsing tolerant and appending messages on recoverable errors preserves robustness when facing malformed or unusual binaries.
 
 Next steps:
-1. Continue the small-step refactors: consolidate any remaining parsing helpers into src/common.zig and add focused unit tests for each incremental change.
-2. Consider a cleanup PR that removes any other dead/unused code left from the refactor window and documents the final public API surface.
+1. Add focused unit tests that assert individual edge-cases (missing DT_STRTAB, malformed dynstr pointers, DT_BIND_NOW inference) to lock down behavior.
+2. Apply similar tightening to PE and Mach-O slice decoders (PE import/export parsing; Mach-O indirect-symbol resolution and export trie when needed).
+3. Continue to keep the chronicle and sigil bookmarks updated for each incremental move.
 
 Status: committed, tests passing, bookmarks updated.

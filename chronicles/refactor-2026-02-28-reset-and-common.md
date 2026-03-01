@@ -103,14 +103,14 @@ Summary of change:
   - pub const decodeElfSlice = slice_dec.decodeElfSlice
   - pub const decodePESlice = slice_dec.decodePESlice
   - pub const decodeMachoSlice is now provided by slice_dec (root previously kept an older local implementation).
-- To avoid a risky large deletion in one step, the prior local decodeMachoSlice implementation in root was renamed to decodeMachoSlice_local as a temporary measure. This preserves the code for review while ensuring the active API points to slice_decoders.
+- To avoid a risky large deletion in one step, the prior local decodeMachoSlice implementation in root was renamed to decodeMachoSlice_local as a temporary measure. This preserved the code for review while ensuring the active API pointed to slice_decoders.
 
 Commits related to this step:
 - fd9949a — refactor(root): alias slice decoders to slice_decoders; rename old local decodeMachoSlice to decodeMachoSlice_local (temporary)
 
 Rationale:
 - Removing duplicate parsing code prevents divergence and reduces maintenance burden. All slice-decoder work (ELF/PE/Mach-O header parsing and symbol resolution) now lives in src/slice_decoders.zig and uses common.* helpers and canonical types.
-- A temporary rename (instead of deletion) keeps the old implementation available for inspection/review and makes the change reversible if an issue is discovered during further refactors.
+- A temporary rename (instead of deletion) kept the old implementation available for inspection/review and made the change reversible if an issue was discovered during further refactors.
 
 Verification:
 - Ran: zig fmt src && zig build test. Tests exercise both root-level analyzeBinary and slice-decoder unit tests that operate on in-memory fixtures; output shows expected BinaryDescription pretty-printing for ELF and Mach-O assets.
@@ -121,3 +121,28 @@ Next recommended steps:
 3. Continue moving additional helpers into common as needed (keeping aliasing in root to ensure stable public API).
 
 Status: committed and tests passing locally. Review and deletion of the temporary local implementation recommended before merging the refactor into mainline.
+
+---
+
+Update — 2026-03-01 (finalized): remove temporary local Mach-O decoder from root and record alias
+
+Summary:
+- Completed the de-duplication by removing the temporary local Mach-O slice decoder (decodeMachoSlice_local) from src/root.zig and ensuring root exposes the canonical slice decoder via alias:
+  - pub const decodeMachoSlice = slice_dec.decodeMachoSlice
+- This finalizes the move of in-memory Mach-O parsing to src/slice_decoders.zig where it uses canonical types in src/common.zig and shared helpers.
+
+Verification & hygiene:
+- Ran: zig fmt && zig build test. All tests passed locally; pretty-print output for ELF and Mach-O fixtures printed as part of the test run.
+- Updated sigil bookmarks to point at the canonical implementations in src/slice_decoders.zig and at the canonical BinaryBundle location in src/common.zig.
+
+Commit:
+- refactor(root): replace local Mach-O slice decoder with alias to slice_decoders.decodeMachoSlice; update chronicle
+
+Rationale:
+- Removing the duplicate implementation prevents divergence and reduces maintenance effort. Keeping a single authoritative Mach-O slice decoder in src/slice_decoders.zig makes further improvements and bug fixes simpler to apply and test.
+
+Next steps:
+1. Continue the small-step refactors: consolidate any remaining parsing helpers into src/common.zig and add focused unit tests for each incremental change.
+2. Consider a cleanup PR that removes any other dead/unused code left from the refactor window and documents the final public API surface.
+
+Status: committed, tests passing, bookmarks updated.

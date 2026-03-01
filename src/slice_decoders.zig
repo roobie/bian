@@ -110,7 +110,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         }
     }
 
-    var dt_needed_indices = std.ArrayList(usize).initCapacity(allocator, 0);
+    var dt_needed_indices = try std.ArrayList(usize).initCapacity(allocator, 0);
     defer dt_needed_indices.deinit(allocator);
     var dyn_str_vaddr: u64 = 0;
     var dyn_str_sz: u64 = 0;
@@ -125,17 +125,27 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                 if (header.is_64) {
                     const d = try rdr.takeStruct(elf.Elf64_Dyn, header.endian);
                     if (d.d_tag == elf.DT_NULL) break;
-                    if (d.d_tag == elf.DT_NEEDED) try dt_needed_indices.append(allocator, @as(usize, d.d_val));
-                    else if (d.d_tag == elf.DT_STRTAB) dyn_str_vaddr = d.d_val;
-                    else if (d.d_tag == elf.DT_STRSZ) dyn_str_sz = d.d_val;
-                    else if (d.d_tag == elf.DT_BIND_NOW) dyn_bind_now = true;
+                    if (d.d_tag == elf.DT_NEEDED) {
+                        try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                    } else if (d.d_tag == elf.DT_STRTAB) {
+                        dyn_str_vaddr = d.d_val;
+                    } else if (d.d_tag == elf.DT_STRSZ) {
+                        dyn_str_sz = d.d_val;
+                    } else if (d.d_tag == elf.DT_BIND_NOW) {
+                        dyn_bind_now = true;
+                    }
                 } else {
                     const d = try rdr.takeStruct(elf.Elf32_Dyn, header.endian);
                     if (d.d_tag == elf.DT_NULL) break;
-                    if (d.d_tag == elf.DT_NEEDED) try dt_needed_indices.append(allocator, @as(usize, d.d_val));
-                    else if (d.d_tag == elf.DT_STRTAB) dyn_str_vaddr = @as(u64, d.d_val);
-                    else if (d.d_tag == elf.DT_STRSZ) dyn_str_sz = @as(u64, d.d_val);
-                    else if (d.d_tag == elf.DT_BIND_NOW) dyn_bind_now = true;
+                    if (d.d_tag == elf.DT_NEEDED) {
+                        try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                    } else if (d.d_tag == elf.DT_STRTAB) {
+                        dyn_str_vaddr = @as(u64, d.d_val);
+                    } else if (d.d_tag == elf.DT_STRSZ) {
+                        dyn_str_sz = @as(u64, d.d_val);
+                    } else if (d.d_tag == elf.DT_BIND_NOW) {
+                        dyn_bind_now = true;
+                    }
                 }
             }
 
@@ -429,6 +439,33 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     try expect(desc.format == root.BinaryFileKind.elf);
     try expect(desc.arch == root.CpuArch.x86_64);
     try expect(desc.bitness == 64);
+
+    // Expect DT_NEEDED libs to include libc and the interpreter
+    var found_libc: bool = false;
+    var found_ld: bool = false;
+    var found_printf: bool = false;
+    for (desc.imports) |imp| {
+        if (std.mem.indexOf(u8, imp, "libc.so.6")) |pos| {
+            _ = pos;
+            found_libc = true;
+        }
+        if (std.mem.indexOf(u8, imp, "ld-linux") ) |pos| {
+            _ = pos;
+            found_ld = true;
+        }
+        if (std.mem.indexOf(u8, imp, "printf")) |pos| {
+            _ = pos;
+            found_printf = true;
+        }
+    }
+    try expect(found_libc == true);
+    try expect(found_ld == true);
+    try expect(found_printf == true);
+
+    // Basic security hint expectations for this asset
+    try expect(desc.pie == root.Perhaps.no);
+    try expect(desc.nx == root.Perhaps.yes);
+    try expect(desc.relro == root.RelroConfig.none);
 }
 
 test "slice_decoders: decodePESlice rejects non-PE file with InvalidHeader" {

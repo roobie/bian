@@ -448,6 +448,218 @@ pub const BinaryDescription = struct {
     }
 };
 
+// JSON stringifier hook used by std.json.Stringify when serializing the
+// BinaryDescription. This gives us complete control over the emitted JSON
+// structure (field names, ordering, hex formatting, which fields to include
+// and how). Consumers that need to include or omit large symbol lists can
+// either call std.json.value on the BinaryDescription (this will invoke this
+// method and include symbols) or implement their own writer that omits the
+// symbols.
+pub fn jsonStringify(self: *@This(), jw: anytype) !void {
+    // Note: `jw` is expected to be a std.json.Stringify instance. We use the
+    // Stringify API (objectField, write, beginArray, beginObject, beginWriteRaw)
+    // which allows streaming and correct escaping without allocating.
+    try jw.beginObject();
+
+    try jw.objectField("schema_version");
+    try jw.write(1);
+
+    try jw.objectField("file");
+    if (self.path.len == 0) {
+        try jw.write(null);
+    } else {
+        try jw.write(self.path);
+    }
+
+    try jw.objectField("format");
+    const fmt_str = switch (self.format) {
+        BinaryFileKind.elf => "elf",
+        BinaryFileKind.macho => "macho",
+        BinaryFileKind.pe => "pe",
+        BinaryFileKind.ape => "ape",
+        else => "unknown",
+    };
+    try jw.write(fmt_str);
+
+    try jw.objectField("os_abi");
+    const os_str = switch (self.os_abi) {
+        OsAbi.linux => "linux",
+        OsAbi.macos => "macos",
+        OsAbi.windows => "windows",
+        else => "unknown",
+    };
+    try jw.write(os_str);
+
+    // arch
+    try jw.objectField("arch");
+    try jw.beginObject();
+    const arch_str = switch (self.arch) {
+        CpuArch.x86 => "x86",
+        CpuArch.x86_64 => "x86_64",
+        CpuArch.armv7 => "armv7",
+        CpuArch.aarch64 => "aarch64",
+        else => "unknown",
+    };
+    try jw.objectField("isa");
+    try jw.write(arch_str);
+    try jw.objectField("bits");
+    try jw.write(@as(u32, self.bitness));
+    const endian_str = switch (self.endianess) {
+        Endian.little => "little",
+        else => "big",
+    };
+    try jw.objectField("endianness");
+    try jw.write(endian_str);
+    try jw.endObject();
+
+    try jw.objectField("file_kind");
+    const fk_str = switch (self.file_kind) {
+        FileKind.executable => "executable",
+        FileKind.shared_library => "shared_library",
+        FileKind.object => "object",
+        else => "unknown",
+    };
+    try jw.write(fk_str);
+
+    // entrypoint as hex string or null
+    try jw.objectField("entrypoint");
+    if (self.entrypoint_virtual_address == 0) {
+        try jw.write(null);
+    } else {
+        // Emit as hex string without allocating by writing raw content to the
+        // underlying writer. We must include the surrounding quotes.
+        try jw.beginWriteRaw();
+        try jw.writer.print("\"0x{x}\"", .{self.entrypoint_virtual_address});
+        jw.endWriteRaw();
+    }
+
+    // security object
+    try jw.objectField("security");
+    try jw.beginObject();
+    try jw.objectField("pie");
+    switch (self.pie) {
+        Perhaps.yes => try jw.write(true),
+        Perhaps.no => try jw.write(false),
+        else => try jw.write(null),
+    }
+    try jw.objectField("nx");
+    switch (self.nx) {
+        Perhaps.yes => try jw.write(true),
+        Perhaps.no => try jw.write(false),
+        else => try jw.write(null),
+    }
+    try jw.objectField("relro");
+    const relro_str = switch (self.relro) {
+        RelroConfig.unknown => "unknown",
+        RelroConfig.none => "none",
+        RelroConfig.partial => "partial",
+        RelroConfig.full => "full",
+        RelroConfig.not_applicable => "n/a",
+    };
+    try jw.write(relro_str);
+    try jw.endObject();
+
+    // sections
+    try jw.objectField("sections");
+    try jw.beginArray();
+    var idx: usize = 0;
+    while (idx < self.sections.len) : (idx += 1) {
+        const s = self.sections[idx];
+        try jw.beginObject();
+        try jw.objectField("idx");
+        try jw.write(@as(u32, idx));
+        try jw.objectField("name");
+        if (s.name.len == 0) try jw.write("(unnamed)") else try jw.write(s.name);
+        try jw.objectField("size");
+        try jw.write(s.size);
+        try jw.objectField("offset");
+        try jw.write(s.file_offset);
+        try jw.objectField("perm");
+        const perm_str = switch (s.permission) {
+            Permission.read => "r",
+            Permission.write => "w",
+            Permission.execute => "x",
+            else => "-",
+        };
+        try jw.write(perm_str);
+        try jw.endObject();
+    }
+    try jw.endArray();
+
+    // segments
+    try jw.objectField("segments");
+    try jw.beginArray();
+    idx = 0;
+    while (idx < self.segments.len) : (idx += 1) {
+        const seg = self.segments[idx];
+        try jw.beginObject();
+        try jw.objectField("idx");
+        try jw.write(@as(u32, idx));
+        try jw.objectField("offset");
+        try jw.write(seg.file_offset);
+        try jw.objectField("size");
+        try jw.write(seg.size);
+        try jw.objectField("perm");
+        const perm_s = switch (seg.permission) {
+            Permission.read => "r",
+            Permission.write => "w",
+            Permission.execute => "x",
+            else => "-",
+        };
+        try jw.write(perm_s);
+        try jw.endObject();
+    }
+    try jw.endArray();
+
+    // imports (include full symbol list)
+    try jw.objectField("imports");
+    try jw.beginObject();
+    try jw.objectField("count");
+    try jw.write(@as(u32, self.imports.len));
+    try jw.objectField("symbols");
+    try jw.beginArray();
+    idx = 0;
+    while (idx < self.imports.len) : (idx += 1) {
+        try jw.write(self.imports[idx]);
+    }
+    try jw.endArray();
+    try jw.endObject();
+
+    // exports
+    try jw.objectField("exports");
+    try jw.beginObject();
+    try jw.objectField("count");
+    try jw.write(@as(u32, self.exports.len));
+    try jw.objectField("symbols");
+    try jw.beginArray();
+    idx = 0;
+    while (idx < self.exports.len) : (idx += 1) {
+        try jw.write(self.exports[idx].name);
+    }
+    try jw.endArray();
+    try jw.endObject();
+
+    // messages
+    try jw.objectField("messages");
+    try jw.beginArray();
+    idx = 0;
+    while (idx < self.messages.len) : (idx += 1) {
+        try jw.write(self.messages[idx].body);
+    }
+    try jw.endArray();
+
+    try jw.objectField("debug_info_present");
+    try jw.write(self.debug_info_present);
+
+    try jw.objectField("metadata");
+    try jw.beginObject();
+    try jw.objectField("duration_ms");
+    try jw.write(0);
+    try jw.endObject();
+
+    try jw.endObject();
+}
+
 /// An owning container for one-or-more BinaryDescription items and the
 /// backing file buffer that all item slices point into (zero-copy).
 pub const BinaryBundle = struct {

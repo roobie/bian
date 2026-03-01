@@ -10,6 +10,7 @@ const Endian = std.builtin.Endian;
 const expect = std.testing.expect;
 const common = @import("common.zig");
 const slice_dec = @import("slice_decoders.zig");
+const test_utils = @import("test_utils.zig");
 
 pub const ParseError = error{
     TooSmall,
@@ -58,6 +59,8 @@ pub const FileKind = common.FileKind;
 
 pub const Perhaps = common.Perhaps;
 
+pub const json_output = @import("json_output.zig");
+
 pub const RelroConfig = common.RelroConfig;
 
 pub const StrippedState = common.StrippedState;
@@ -87,7 +90,8 @@ pub fn bufferedRead(path: []const u8, buffer: []u8, max_length: usize) !void {
 test "sanity checks: what's CWD?" {
     var buf: [1024]u8 = @splat(0);
     const p = try fs.cwd().realpath(".", buf[0..]);
-    std.debug.print("CWD: {s}\n", .{p});
+    // No noisy prints on success. If this fails the test harness will report it.
+    _ = p;
 }
 
 test "bufferedRead: base case 1 - read ascii text file, which is shorter than default read length" {
@@ -623,6 +627,43 @@ pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescripti
     if (desc.messages.len != 0) allocator.free(desc.messages);
 }
 
+/// Decodes a PE file into a BinaryBundle (single-slice). Uses slice_dec.decodePESlice
+/// to parse the file_buf and then wraps the resulting BinaryDescription into a
+/// BinaryBundle that owns the backing file buffer.
+fn decodePe(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle {
+    // Read whole file into backing buffer
+    const stat = try file.stat();
+    const file_size = @as(usize, stat.size);
+    const file_buf = try allocator.alloc(u8, file_size);
+    var keep_backing: bool = false;
+    defer if (!keep_backing) allocator.free(file_buf);
+
+    var fr = file.reader(file_buf);
+    // fill buffer completely
+    try fr.interface.fill(file_size);
+
+    var bundle_list = try std.ArrayList(BinaryDescription).initCapacity(allocator, 0);
+    defer bundle_list.deinit(allocator);
+
+    var desc = try slice_dec.decodePESlice(allocator, file_buf, null);
+    if (path) |p| {
+        var pbuf = try allocator.alloc(u8, p.len);
+        var j: usize = 0;
+        while (j < p.len) : (j += 1) {
+            pbuf[j] = p[j];
+        }
+        desc.path = pbuf[0..p.len];
+    } else {
+        desc.path = &[_]u8{};
+    }
+    try bundle_list.append(allocator, desc);
+
+    const items = try bundle_list.toOwnedSlice(allocator);
+    const bundle = BinaryBundle{ .items = items, .backing_file = file_buf };
+    keep_backing = true;
+    return bundle;
+}
+
 /// Analyzes a binary file and returns a BinaryBundle containing one or more
 /// BinaryDescription items (one per architecture slice for fat Mach-O).
 pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8) !BinaryBundle {
@@ -637,7 +678,7 @@ pub fn analyzeBinary(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]c
     switch (stage0) {
         .elf => return try decodeElf(allocator, file, path),
         .macho => return try decodeMacho(allocator, file, path),
-        .pe => return error.UnsupportedVariant, // Stub for now
+        .pe => return try decodePe(allocator, file, path),
         .ape => return error.UnsupportedVariant, // Stub for now
         .unknown => return error.InvalidHeader,
     }
@@ -988,18 +1029,26 @@ fn decodeMacho(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u
 }
 
 test ": ELF.amd64 analyze binary + pretty print" {
-    // var file = try std.fs.cwd().openFile("testing/assets/bian", .{});
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
     defer file.close();
     const allocator = std.testing.allocator;
     const bundle = try analyzeBinary(allocator, file, "testing/assets/elf-Linux-x64-bash");
     defer BinaryBundle.free(allocator, bundle);
-    try expect(bundle.items[0].format == .elf);
-    try expect(bundle.items[0].arch == .x86_64); // Assuming test file
-    var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    try bundle.items[0].writePretty(&stderr_writer.interface, PrettyPrintOptionsDefault);
-    try stderr_writer.interface.flush();
+
+    // Capture pretty output in-memory; only emit it to stderr if an assertion fails.
+    var alloc_w = std.io.Writer.Allocating.init(allocator);
+    defer alloc_w.deinit();
+    try bundle.items[0].writePretty(&alloc_w.writer, PrettyPrintOptionsDefault);
+
+    // Check invariants and print captured output on failure for easier debugging.
+    std.testing.expect(bundle.items[0].format == .elf) catch |err| {
+        try test_utils.dumpAllocatingToStderr(&alloc_w);
+        return err;
+    };
+    std.testing.expect(bundle.items[0].arch == .x86_64) catch |err| {
+        try test_utils.dumpAllocatingToStderr(&alloc_w);
+        return err;
+    };
 }
 
 test ": Mach-O.amd64 analyze binary + pretty print" {
@@ -1008,12 +1057,19 @@ test ": Mach-O.amd64 analyze binary + pretty print" {
     const allocator = std.testing.allocator;
     const bundle = try analyzeBinary(allocator, file, "testing/assets/MachO-OSX-x64-ls");
     defer BinaryBundle.free(allocator, bundle);
-    try expect(bundle.items[0].format == .macho);
-    try expect(bundle.items[0].arch == .x86_64);
-    var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    try bundle.items[0].writePretty(&stderr_writer.interface, PrettyPrintOptionsDefault);
-    try stderr_writer.interface.flush();
+
+    var alloc_w = std.io.Writer.Allocating.init(allocator);
+    defer alloc_w.deinit();
+    try bundle.items[0].writePretty(&alloc_w.writer, PrettyPrintOptionsDefault);
+
+    std.testing.expect(bundle.items[0].format == .macho) catch |err| {
+        try test_utils.dumpAllocatingToStderr(&alloc_w);
+        return err;
+    };
+    std.testing.expect(bundle.items[0].arch == .x86_64) catch |err| {
+        try test_utils.dumpAllocatingToStderr(&alloc_w);
+        return err;
+    };
 }
 
 // Decoders invariants tests — exercise only robust invariants so tests remain

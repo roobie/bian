@@ -175,3 +175,34 @@ Next steps:
 2. After hardening ELF decoding, apply equivalent edge-case tests for PE and Mach-O dynamic/import/export parsing.
 
 Status: committed, tests passing, chronicle updated.
+
+---
+
+Update — 2026-03-01: expand ELF edge-case tests and add PE/Mach-O header checks
+
+Summary of change:
+- Expanded ELF edge-case unit tests to include additional malformed DT sequences:
+  - Missing .dynstr section (set DT_STRTAB zero and zero shstrtab) -> decoder appends "DT_NEEDED entries present but no dynstr found" message.
+  - Missing DT_NULL terminator (flip DT_NULL to DT_NEEDED) -> decoder may either return an error or succeed depending on reader behavior; tests accept both but ensure no panic and free returned slices.
+  - Premature DT_NULL (replace first DT_NEEDED with DT_NULL) -> ensures DT_NEEDED entries after the premature terminator are ignored (imports count decreases).
+- Added small PE and Mach-O header edge-case tests:
+  - PE: synthetic MZ header with out-of-range e_lfanew -> decodePESlice returns ParseError.Malformed.
+  - Mach-O: corrupt sizeofcmds in the mach_header to an oversized value -> decodeMachoSlice returns ParseError.Malformed.
+
+Notes:
+- Tests mutate fixtures and synthetic buffers in-memory and always free any returned owned slices to avoid allocator leaks in the test harness.
+- The missing-DT_NULL test is intentionally permissive (accepts either an error or a successful parse) because different std.io.Reader EOF behaviors can lead to either outcome; the important property is the decoder doesn't panic and does not leak.
+
+Commits:
+- 02ef332 — test(slice): expand ELF edge-case tests (missing dynstr, missing DT_NULL, premature DT_NULL) and add PE/Mach-O helpers
+- a877b4e — test(slice): add PE/Mach-O malformed-header edge-case tests
+
+Verification:
+- Ran: zig fmt && zig build test. All new tests pass locally.
+
+Next steps:
+1. Harden decodeElfSlice to avoid panics on pathological integer values in DT entries (use checked casts or early bounds checks before casting to usize).
+2. Apply similar robustness improvements to PE and Mach-O decoders, then extend tests to validate behavior under intentionally malicious header fields.
+3. Consider adding synthetic, small-fuzz style tests that randomly mutate dynamic/load-command regions and assert the decoder never panics (only returns errors or messages).
+
+Status: committed, tests passing, chronicle updated.

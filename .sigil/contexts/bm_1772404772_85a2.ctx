@@ -1,0 +1,3 @@
+            defer diag.deinit(gpa);
+>>>         try std.testing.expectError(error.ParseZon, fromSlice(u8, gpa, "32a32", &diag, .{}));
+            try std.testing.expectFmt(

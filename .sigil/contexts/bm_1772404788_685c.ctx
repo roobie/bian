@@ -1,0 +1,2 @@
+>>> pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
+        if (buf.len < 4) return ParseError.TooSmall;

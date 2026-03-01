@@ -1,0 +1,3 @@
+                inline while (j < 10) : (j += 1) {
+>>>                 inline for (rounds) |r| {
+                        v[r.a] = v[r.a] +% v[r.b] +% m[sigma[j][r.x]];

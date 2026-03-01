@@ -1,0 +1,2 @@
+>>> pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
+        if (file_buf.len < 16) return ParseError.TooSmall;

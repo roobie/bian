@@ -1,0 +1,3 @@
+                const underlying = self.getUnderlyingAllocatorPtr();
+>>>             const result = underlying.rawAlloc(n, alignment, ret_addr) orelse
+                    return null;

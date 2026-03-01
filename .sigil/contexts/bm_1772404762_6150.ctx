@@ -1,0 +1,2 @@
+>>> fn ExtraData(comptime T: type) type {
+        return struct { data: T, end: usize };

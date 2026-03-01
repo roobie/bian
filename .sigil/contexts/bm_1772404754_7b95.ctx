@@ -1,0 +1,2 @@
+>>> pub const VTable = struct {
+        /// Return a pointer to `len` bytes with specified `alignment`, or return

@@ -139,110 +139,54 @@ Common micro-patterns and idioms you should reproduce
 - Use `@compileError` to make invalid API usages fail at compile time.
 - Prefer `allocSentinel`/`allocWithOptions` for sentinel/NUL-terminated buffers rather than manual allocation + append semantics.
 
-Collections (containers) — idioms and patterns
----------------------------------------------
-Collections in std expose consistent patterns you should reproduce when implementing container-like APIs.
+Explored pattern areas (top-5 sweep)
+------------------------------------
+I swept five high-value pattern areas and added representative Sigil bookmarks for quick reference. Below are the areas, why they matter, and bookmark pointers (use `sg show <id>` to view context).
 
-- Constructors / init patterns
-  - `pub fn init(allocator: Allocator) Self` or variants that accept a "gpa" (general-purpose allocator) are common. Prefer to accept an allocator explicitly and return a constructed container or an Error union on OOM.
-  - Bookmark examples: array_list.init (701_f3b6), array_hash_map.init (701_c72d), hash_map.init (702_66be), static_string_map.init (702_8309), priority_queue.init (702_4e34), buf_set.init (702_3c24).
+1) Allocator implementations & wrapper patterns
+- Why: allocators are central to std's memory model; many APIs follow the same allocation/free/errdefer patterns and use raw hooks for diagnostics.
+- Representative bookmarks:
+  - Allocator.VTable declaration — 754_7b95
+  - rawAlloc wrapper (calls through vtable) — 754_075b
+  - allocAdvancedWithRetAddr core allocation — 754_312c
+  - alloc + @memset undefined example — 754_b2eb
+  - mem wrapper underlying.rawAlloc usage — 754_8667
 
-- Deinit / ownership
-  - Provide `deinit(self: *Self)` and `deinit(self: *Self, allocator: Allocator)` variants where appropriate. Many containers provide deinit that accepts the allocator used to free internal buffers.
-  - Bookmark examples: array_list.deinit (165_c9c6 / 701_d28a for gpa variant), array_hash_map.deinit (701_c72d), hash_map.deinit (394_628c / 394_12f3), bit_set.deinit (702_f1d4).
+2) Comptime-driven APIs & reflection patterns
+- Why: comptime generics, `inline for`, and `@typeInfo` are used to implement type-generic algorithms and code generation.
+- Representative bookmarks:
+  - inline-for over float types in parse_float — 762_1bf0
+  - timing_safe.eql (comptime T: type + @typeInfo usage) — 762_cd42
+  - blake2 rounds unrolling (inline for) — 762_e99c
+  - Zir.ExtraData (comptime T and inline for over fields) — 762_6150
 
-- Grow / capacity strategies
-  - Expose ensureTotalCapacity / ensureCapacity helpers that implement growth strategies and encapsulate reallocation semantics. These usually return Allocator.Error!void and accept an allocator when the caller manages memory.
-  - Bookmark examples: array_list.ensureTotalCapacity (701_9898), array_hash_map.ensureTotalCapacity (701_7377), hash_map.ensureTotalCapacity (702_6f6c), priority_queue.ensureTotalCapacity (702_c8b1), multi_array_list.ensureTotalCapacity (702_fcfd).
+3) Error handling & testing patterns
+- Why: std uses error unions and a testing harness (`testing.expectError`, `testing.failing_allocator`) extensively to document and validate failure modes.
+- Representative bookmarks:
+  - FailingAllocator test / failing_allocator usage — 772_be76
+  - zon.parse tests: many expectError usages — 772_85a2
 
-- Insert / Put / getOrPut
-  - Use getOrPut / put helpers to encapsulate insert-or-update semantics. They commonly return a result union (GetOrPutResult) or an error on OOM.
-  - Bookmark examples: array_hash_map.getOrPut (701_6cfe), hash_map.getOrPut (702_a4f4), hash_map.put (702_810f), array_hash_map.put (701_db2f).
+4) Crypto & secure-zero / constant-time idioms
+- Why: security-critical code uses secureZero and timing-safe comparisons; these patterns must be followed for secrets handling.
+- Representative bookmarks:
+  - crypto.secureZero helper and test — 779_7e62
+  - timing_safe module header & helpers — 779_2519
+  - bcrypt secureZero usage on password buffers — 779_b281
 
-- Clone / cloneWithAllocator
-  - Provide clone() that uses the container's allocator, and cloneWithAllocator/clone(self, gpa) that accepts an allocator to allocate the clone. Return Allocator.Error!Self on OOM.
-  - Bookmark examples: array_list.clone (701_341d / 701_d28a for gpa), hash_map.cloneWithAllocator (702_be59), array_hash_map.cloneWithAllocator (701_5d11), multi_array_list.clone (702_ac5f), buf_set.clone (702_520e), bit_set.clone (702_3438).
+5) Parsing / binary loaders (safe slice handling)
+- Why: parsers demonstrate careful bounds checks, zero-copy slice handling, and fallbacks for malformed data — great examples for robust code.
+- Representative bookmarks:
+  - decodeElfSlice (src/slice_decoders.zig) — 788_1d06
+  - decodePESlice (src/slice_decoders.zig) — 788_2bd7
+  - decodeMachoSlice (src/slice_decoders.zig) — 788_685c
+  - elf module entry (vendor/zig/lib/std/elf.zig) — 788_83ee
 
-- Pop / remove semantics
-  - Provide pop/remove variants returning optional values or booleans to indicate success. Document whether they shift elements, return owned elements, or preserve capacity.
-  - Bookmark examples: array_list.pop (701_341d), array_hash_map.pop (701_db2f), hash_map.remove (702_90f1), priority_queue.remove (702_3dfe).
+How I picked locations
+- Used ripgrep to find canonical helper functions and test blocks (e.g., rawAlloc/vtable in Allocator.zig, `inline for` uses in crypto and fmt, testing.expectError occurrences, secureZero in crypto, and decode*Slice functions in src/).
+- Added Sigil bookmarks (sg add) at representative signatures/definitions and test blocks so you can jump to these patterns with `sg show`.
 
-- Iterators & peek
-  - Some containers expose peek/iterator helpers; ensure you document iterator invalidation rules and ownership semantics.
-  - Bookmark examples: priority_queue.peek (702_4e34), array_list iterator examples exist in tests (see array_list file).
-
-Representative bookmarks (collections)
-- array_list.init — 701_f3b6
-- array_list.append — 701_5348
-- array_list.appendSlice — 701_01f9
-- array_list.ensureTotalCapacity — 701_9898
-- array_list.clone (and gpa variant) — 701_341d / 701_d28a
-- array_hash_map.init — 701_c72d
-- array_hash_map.getOrPut — 701_6cfe
-- array_hash_map.put — 701_db2f
-- array_hash_map.cloneWithAllocator — 701_5d11
-- array_hash_map.ensureTotalCapacity (gpa) — 701_7377
-- hash_map.init — 702_66be
-- hash_map.getOrPut — 702_a4f4
-- hash_map.put — 702_810f
-- hash_map.remove — 702_90f1
-- hash_map.cloneWithAllocator — 702_be59
-- hash_map.ensureTotalCapacity (allocator) — 702_6f6c
-- static_string_map.init — 702_8309
-- priority_queue.init/remove/ensureTotalCapacity — 702_4e34 / 702_3dfe / 702_c8b1
-- multi_array_list.append/ensureTotalCapacity/clone — 702_90cc / 702_fcfd / 702_ac5f
-- buf_set.init/insert/clone — 702_3c24 / 702_499b / 702_520e
-- bit_set.deinit/clone — 702_f1d4 / 702_3438
-
-Specialized collections
------------------------
-The std tree contains several specialized container implementations that follow different ownership and performance trade-offs. Below are the idioms to reproduce and representative bookmarks for these specialized containers.
-
-- Node-based linked lists (SinglyLinkedList / DoublyLinkedList)
-  - Manual nodes: these modules provide non-owning node operations (insertAfter/insertBefore, remove, prepend/append). Callers typically allocate nodes themselves and link/unlink them; the APIs avoid hidden allocations.
-  - O(1) splices: DoublyLinkedList supports O(1) concat/move operations (useful for queuing / work-stealing patterns).
-  - Iterator invalidation: removing or moving nodes invalidates iterators that point into the list; document this in caller-facing APIs.
-  - Bookmarks:
-    - DoublyLinkedList.insertAfter — 982_6bca
-    - DoublyLinkedList.insertBefore — 982_e8eb
-    - DoublyLinkedList.concatByMoving — 982_c1a0
-    - DoublyLinkedList.append/prepend/pop/popFirst — 982_87f8 / 982_a129 / 982_33b6 / 982_4516
-    - SinglyLinkedList.prepend/remove/popFirst — 990_0e0d / 990_f040 / 990_8996
-
-- SegmentedList
-  - Use-case: large or growing sequences where reallocating a single backing array is expensive or undesirable. Implemented as fixed-size segments to amortize growth and preserve existing segment allocations.
-  - APIs accept an allocator and provide addOne (returning a pointer to construct in-place), appendSlice, shrink/clear variants that control capacity freeing.
-  - Bookmark highlights:
-    - SegmentedList type — 998_729d
-    - SegmentedList.deinit — 998_b25d
-    - SegmentedList.append/addOne/pop — 998_fd5a / 998_8ee1 / 998_ce98
-    - Iteration across segments — 999_fa00
-
-- Treap (randomized BST)
-  - Treap is a BST with randomized priorities: common API patterns include getEntryFor (lookup/insertion point), inorder iterators, and bulk init from a slice with RNG.
-  - Use when you want balanced-tree semantics without deterministic rotations; good for implementations that need ordered sets/maps with expected-logarithmic depths.
-  - Bookmarks:
-    - Treap type — 004_f912
-    - Treap.getEntryFor — 004_9fd4
-    - Treap.inorderIterator / next — 004_78bd / 004_6cee
-    - Treap.init (build from slice and RNG) — 004_66e6
-
-- PriorityDequeue (deque supporting both min/max operations)
-  - Unlike a single-ended PriorityQueue, PriorityDequeue implementations expose peekMin/peekMax and removeMin/removeMax semantics and allow removal by index. They are often backed by an array heap and accept a comparator context.
-  - APIs usually include add/addSlice, ensureTotalCapacity, iterator for linear traversal (note: order is not sorted for linear iteration).
-  - Bookmarks:
-    - PriorityDequeue type — 012_73bd
-    - init/add/addSlice — 012_40d3 / 012_9031 / 012_3a8c
-    - peekMin/removeMin/removeIndex — 012_045f / 012_988f / 012_1760
-    - ensureTotalCapacity / iterator — 012_7407 / 012_c0e7
-
-How to use these
-- For node-based lists, prefer non-owning node APIs when you need O(1) splices or explicit node lifetime management; document who owns nodes and how to free them.
-- For segmented lists, use addOne to construct elements in-place when element construction is expensive or when avoiding temporary allocations matters.
-- For treap, use getEntryFor to find or create entries and prefer inorderIterator when you need ordered traversal.
-- For priority dequeues, document that linear iteration does not yield elements in sorted order; use repeated removeMin/removeMax to consume in order.
-
-Suggested next steps (collections)
-- Continue sweeping other container-like files and add bookmarks for tests and edge-case patterns (e.g., iterator tests, failing_allocator behavior, zero-sized element handling in containers).
-- Optionally produce a JSON checklist mapping these specialized idiom names to bookmark IDs for programmatic tooling.
+Next steps
+----------
+- I can expand any of these areas with deeper sweeps (e.g., collect every secureZero usage, every `inline for` reflection pattern, or all testing.expectError sites) and produce a JSON mapping for tooling.
+- I can sweep tests in the parsing modules and bookmark failure-case examples.
 

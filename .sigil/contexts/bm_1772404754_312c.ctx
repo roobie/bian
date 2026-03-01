@@ -1,0 +1,2 @@
+>>> pub inline fn allocAdvancedWithRetAddr(
+        self: Allocator,

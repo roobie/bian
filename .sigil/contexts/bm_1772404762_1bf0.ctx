@@ -1,0 +1,3 @@
+    test parseFloat {
+>>>     inline for ([_]type{ f16, f32, f64, f80, f128 }) |T| {
+            try testing.expectError(error.InvalidCharacter, parseFloat(T, ""));

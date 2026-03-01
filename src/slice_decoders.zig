@@ -67,12 +67,17 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
     defer segments.deinit(allocator);
     var segmaps = try std.ArrayList(root.SegmentMap).initCapacity(allocator, 0);
     defer segmaps.deinit(allocator);
-    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var imports = try std.ArrayList(root.ImportEntry).initCapacity(allocator, 0);
     defer imports.deinit(allocator);
     var exports = try std.ArrayList(root.Export).initCapacity(allocator, 0);
     defer exports.deinit(allocator);
     var messages = try std.ArrayList(root.Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
+
+    // For ELF we may collect undefined symbol names into a temporary list so we can
+    // represent them as a single ImportEntry with empty dll (unknown origin).
+    var undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer undef_syms.deinit(allocator);
 
     // Collect sections
     var sh_iter2 = header.iterateSectionHeadersBuffer(file_buf);
@@ -174,7 +179,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                         for (dt_needed_indices.items) |name_off| {
                             if (name_off < dynstr.len) {
                                 const s = mem.sliceTo(dynstr[name_off..], 0);
-                                if (s.len != 0) try imports.append(allocator, s);
+                                if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
                             }
                         }
                     } else {
@@ -199,7 +204,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                                 for (dt_needed_indices.items) |name_off| {
                                     if (name_off < dynstr.len) {
                                         const s = mem.sliceTo(dynstr[name_off..], 0);
-                                        if (s.len != 0) try imports.append(allocator, s);
+                                        if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
                                     }
                                 }
                                 found_dynstr = true;
@@ -228,7 +233,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                             for (dt_needed_indices.items) |name_off| {
                                 if (name_off < dynstr.len) {
                                     const s = mem.sliceTo(dynstr[name_off..], 0);
-                                    if (s.len != 0) try imports.append(allocator, s);
+                                    if (s.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
                                 }
                             }
                             found_dynstr2 = true;

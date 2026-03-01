@@ -1,0 +1,2 @@
+    //! Please see this accepted proposal for the long-term plans regarding
+>>> //! constant-time operations in Zig: https://github.com/ziglang/zig/issues/1776

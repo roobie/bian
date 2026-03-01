@@ -1,0 +1,3 @@
+        {
+>>>         var failing_allocator_state = FailingAllocator.init(std.testing.allocator, .{
+                .fail_index = 2,

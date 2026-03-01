@@ -1,0 +1,3 @@
+            var found_mh_header: bool = false;
+>>>         for (desc.exports) |ex| {
+                try expect(ex.name.len > 0);

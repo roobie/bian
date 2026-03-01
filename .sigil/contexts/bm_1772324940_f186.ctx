@@ -1,0 +1,2 @@
+>>>     if (have_dyn) {
+            const dyn_region = root.safeSlice(file_buf, @as(u64, dyn_off), @as(u64, dyn_sz));

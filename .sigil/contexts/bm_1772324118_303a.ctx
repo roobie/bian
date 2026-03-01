@@ -1,0 +1,3 @@
+    /// backing file buffer that all item slices point into (zero-copy).
+>>> pub const BinaryBundle = struct {
+        items: []BinaryDescription,

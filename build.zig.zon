@@ -36,6 +36,10 @@
             .url = "git+https://github.com/ikskuh/zig-args?ref=master#e060ac80c244e9675471b6d213b22ddc83cc8f98",
             .hash = "args-0.0.0-CiLiqo_RAADz2TiHUzG5-0Mk7IZHR-h1SZgUrb_k4c7d",
         },
+        .minish = .{
+            .url = "https://github.com/CogitatorTech/minish/archive/v0.1.0.tar.gz",
+            .hash = "minish-0.1.0-SQtSTWHkAQACfz3xGuWHU8zbx320vK_47r2yto3Pq0Rf",
+        },
     },
     .paths = .{
         "build.zig",

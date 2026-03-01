@@ -1,2 +1,2 @@
->>> fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
-        // Bounds-check and avoid overflow when computing start+len
+>>> pub fn safeSlice(buf: []const u8, off64: u64, len64: u64) ?[]const u8 {
+        if (off64 > @as(u64, buf.len)) return null;

@@ -142,12 +142,12 @@ pub fn appendSectionFromBlock(allocator: std.mem.Allocator, sections_list: *std.
     }
 }
 
-pub fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *std.ArrayList([]const u8), lc_data: []const u8, m_endian: Endian) !void {
+pub fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *std.ArrayList(ImportEntry), lc_data: []const u8, m_endian: Endian) !void {
     if (lc_data.len < 12) return;
     const name_off = @as(usize, readU32At(lc_data, 8, m_endian));
     if (name_off < lc_data.len) {
         const name = std.mem.sliceTo(lc_data[name_off..], 0);
-        if (name.len != 0) try imports_list.append(allocator, name);
+        if (name.len != 0) try imports_list.append(allocator, ImportEntry{ .dll = name, .symbols = &[_][]const u8{} });
     }
 }
 

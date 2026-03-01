@@ -318,12 +318,15 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
     }
 
     // 7) build and return BinaryDescription (imports/exports parsing omitted here)
-    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var imports = try std.ArrayList(ImportEntry).initCapacity(allocator, 0);
     defer imports.deinit(allocator);
     var exports = try std.ArrayList(Export).initCapacity(allocator, 0);
     defer exports.deinit(allocator);
     var messages = try std.ArrayList(Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
+
+    var undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer undef_syms.deinit(allocator);
 
     // --- PT_DYNAMIC parsing: collect DT_NEEDED entries and map them via DT_STRTAB ---
     var dyn_off: usize = 0;
@@ -399,7 +402,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                         for (dt_needed_indices.items) |name_off| {
                             if (name_off < dynstr.len) {
                                 const s = mem.sliceTo(dynstr[name_off..], 0);
-                                if (s.len != 0) try imports.append(allocator, s);
+                                if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
                             }
                         }
                     } else {
@@ -426,7 +429,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                                 for (dt_needed_indices.items) |name_off| {
                                     if (name_off < dynstr.len) {
                                         const s = mem.sliceTo(dynstr[name_off..], 0);
-                                        if (s.len != 0) try imports.append(allocator, s);
+                                        if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
                                     }
                                 }
                                 found_dynstr = true;
@@ -456,7 +459,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                             for (dt_needed_indices.items) |name_off| {
                                 if (name_off < dynstr.len) {
                                     const s = mem.sliceTo(dynstr[name_off..], 0);
-                                    if (s.len != 0) try imports.append(allocator, s);
+                                    if (s.len != 0) try imports.append(allocator, ImportEntry{ .dll = s, .symbols = &[_][]const u8{} });
                                 }
                             }
                             found_dynstr2 = true;
@@ -512,7 +515,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                     if (name_idx >= strtab.len) continue;
                     const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym.st_shndx == elf.SHN_UNDEF) {
-                        if (name.len != 0) try imports.append(allocator, name);
+                        if (name.len != 0) try undef_syms.append(allocator, name);
                     } else {
                         const kind = if (sym.st_type() == elf.STT_FUNC) ExportKind.function else ExportKind.variable;
                         if (name.len != 0) try exports.append(allocator, Export{ .name = name, .kind = kind });
@@ -523,7 +526,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
                     if (name_idx >= strtab.len) continue;
                     const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym32.st_shndx == elf.SHN_UNDEF) {
-                        if (name.len != 0) try imports.append(allocator, name);
+                        if (name.len != 0) try undef_syms.append(allocator, name);
                     } else {
                         const kind = if (sym32.st_type() == elf.STT_FUNC) ExportKind.function else ExportKind.variable;
                         if (name.len != 0) try exports.append(allocator, Export{ .name = name, .kind = kind });
@@ -807,7 +810,7 @@ pub const appendDylibNameFromLcData = common.appendDylibNameFromLcData;
 
 pub const appendRpathMessageFromLcData = common.appendRpathMessageFromLcData;
 
-fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, sections: []const Section, indirectsymoff: usize, nindirectsyms: usize, ilocalsym: usize, nlocalsym: usize, iextdefsym: usize, nextdefsym: usize, iundefsym: usize, nundefsym: usize, imports: *std.ArrayList([]const u8), exports: *std.ArrayList(Export)) !void {
+fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usize, nsyms: usize, stroff: usize, strsize: usize, is64: bool, m_endian: Endian, sections: []const Section, indirectsymoff: usize, nindirectsyms: usize, ilocalsym: usize, nlocalsym: usize, iextdefsym: usize, nextdefsym: usize, iundefsym: usize, nundefsym: usize, imports: *std.ArrayList(ImportEntry), exports: *std.ArrayList(Export)) !void {
     if (nsyms == 0) return;
 
     // silence unused LC_DYSYMTAB range parameters for now (may be used later)
@@ -821,6 +824,11 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
     // SymInfo and symInfoByIndex are defined at top-level for reuse.
 
     // --- direct symtab parsing (existing behavior) ---
+    // Collect undefined symbol names into a temporary list; we'll append them
+    // to the imports array as a single ImportEntry at the end.
+    var local_undef = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer local_undef.deinit(allocator);
+
     if (m_endian == .little) {
         var nlist_entry_size: usize = 0;
         if (is64) nlist_entry_size = @sizeOf(macho.nlist_64) else nlist_entry_size = @sizeOf(macho.nlist);
@@ -834,7 +842,7 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
                 if (idx >= strsize) continue;
                 const name = mem.sliceTo(macho_buf[stroff + idx ..], 0);
                 if (macho.nlist_64.undf(sym)) {
-                    try imports.append(allocator, name);
+                    try local_undef.append(allocator, name);
                 } else if (macho.nlist_64.ext(sym)) {
                     try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
                 }
@@ -850,7 +858,7 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
                 const ntype = sym.n_type;
                 const type_ = macho.N_TYPE & ntype;
                 if (type_ == macho.N_UNDF) {
-                    try imports.append(allocator, name);
+                    try local_undef.append(allocator, name);
                 } else if ((ntype & macho.N_EXT) != 0) {
                     try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
                 }
@@ -871,7 +879,7 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
                 const name = mem.sliceTo(macho_buf[stroff + idx ..], 0);
                 const type_ = @as(u32, n_type) & macho.N_TYPE;
                 if (type_ == macho.N_UNDF) {
-                    try imports.append(allocator, name);
+                    try local_undef.append(allocator, name);
                 } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                     try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
                 }
@@ -883,7 +891,7 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
                 const name = mem.sliceTo(macho_buf[stroff + idx ..], 0);
                 const type_ = @as(u32, n_type) & macho.N_TYPE;
                 if (type_ == macho.N_UNDF) {
-                    try imports.append(allocator, name);
+                    try local_undef.append(allocator, name);
                 } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                     try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
                 }
@@ -930,13 +938,19 @@ fn parseSymtab(allocator: std.mem.Allocator, macho_buf: []const u8, symoff: usiz
                 const n_type = si.n_type;
                 const type_ = @as(u32, n_type) & macho.N_TYPE;
                 if (type_ == macho.N_UNDF) {
-                    try imports.append(allocator, name);
+                    try local_undef.append(allocator, name);
                 } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                     try exports.append(allocator, Export{ .name = name, .kind = ExportKind.unknown });
                 }
             }
             sidx += 1;
         }
+    }
+
+    // After collecting undefined symbols, append them as a single ImportEntry if present
+    if (local_undef.items.len != 0) {
+        const syms = try local_undef.toOwnedSlice(allocator);
+        try imports.append(allocator, ImportEntry{ .dll = &[_]u8{}, .symbols = syms });
     }
 }
 
@@ -1190,8 +1204,8 @@ test "decoders.invariants: Mach-O (backing buffer, sections/segments bounds, imp
         }
 
         // Imports and exports should contain valid non-empty names if present.
-        for (desc.imports) |imp| {
-            try expect(imp.len > 0);
+        for (desc.imports) |ie| {
+            try expect(ie.dll.len > 0 or ie.symbols.len > 0);
         }
         for (desc.exports) |ex| {
             try expect(ex.name.len > 0);

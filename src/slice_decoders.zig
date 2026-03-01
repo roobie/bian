@@ -317,7 +317,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                     if (name_idx >= strtab.len) continue;
                     const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym.st_shndx == elf.SHN_UNDEF) {
-                        if (name.len != 0) try imports.append(allocator, name);
+                        if (name.len != 0) try undef_syms.append(allocator, name);
                     } else {
                         const kind = if (sym.st_type() == elf.STT_FUNC) root.ExportKind.function else root.ExportKind.variable;
                         if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = kind });
@@ -328,7 +328,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
                     if (name_idx >= strtab.len) continue;
                     const name = mem.sliceTo(strtab[name_idx..], 0);
                     if (sym32.st_shndx == elf.SHN_UNDEF) {
-                        if (name.len != 0) try imports.append(allocator, name);
+                        if (name.len != 0) try undef_syms.append(allocator, name);
                     } else {
                         const kind = if (sym32.st_type() == elf.STT_FUNC) root.ExportKind.function else root.ExportKind.variable;
                         if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = kind });
@@ -337,6 +337,13 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
             }
         }
         sh_index += 1;
+    }
+
+    // If we collected undefined symbol names, represent them as a single
+    // ImportEntry with empty dll (unknown origin).
+    if (undef_syms.items.len != 0) {
+        const syms_slice = try undef_syms.toOwnedSlice(allocator);
+        try imports.append(allocator, root.ImportEntry{ .dll = &[_]u8{}, .symbols = syms_slice });
     }
 
     // Security hints: NX, RELRO, PIE
@@ -572,58 +579,70 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                     if (name_rva == 0) break;
                     if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva))) |name_off| {
                         const dllname = std.mem.sliceTo(buf[name_off..], 0);
-                        if (dllname.len != 0) try imports.append(allocator, dllname);
+                        if (dllname.len != 0) {
+                            // Gather symbol names for this DLL into a temporary list
+                            var dll_symbols = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+                            defer dll_symbols.deinit(allocator);
 
-                        // Also parse import name thunk table to collect imported symbol names
-                        const oft_rva = root.readU32At(buf, imp_off + 0, .little);
-                        const first_thunk_rva = root.readU32At(buf, imp_off + 16, .little);
-                        const thunk_rva = if (oft_rva != 0) oft_rva else first_thunk_rva;
-                        if (thunk_rva != 0) {
-                            if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, thunk_rva))) |thunk_off| {
-                                var toff = thunk_off;
-                                while (true) {
-                                    if (is_pe32) {
-                                        if (toff + 4 > buf.len) break;
-                                        const t = root.readU32At(buf, toff, .little);
-                                        if (t == 0) break;
-                                        const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
-                                        if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
-                                            // import by ordinal; skip for now
-                                        } else {
-                                            const name_rva2 = t;
-                                            if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva2))) |name_off2| {
-                                                if (name_off2 + 2 < buf.len) {
-                                                    const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
-                                                    if (byname.len != 0) try imports.append(allocator, byname);
-                                                }
+                            // Parse import name thunk table to collect imported symbol names
+                            const oft_rva = root.readU32At(buf, imp_off + 0, .little);
+                            const first_thunk_rva = root.readU32At(buf, imp_off + 16, .little);
+                            const thunk_rva = if (oft_rva != 0) oft_rva else first_thunk_rva;
+                            if (thunk_rva != 0) {
+                                if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, thunk_rva))) |thunk_off| {
+                                    var toff = thunk_off;
+                                    while (true) {
+                                        if (is_pe32) {
+                                            if (toff + 4 > buf.len) break;
+                                            const t = root.readU32At(buf, toff, .little);
+                                            if (t == 0) break;
+                                            const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
+                                            if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
+                                                // import by ordinal; skip for now
                                             } else {
-                                                try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
-                                            }
-                                        }
-                                        toff += 4;
-                                    } else {
-                                        if (toff + 8 > buf.len) break;
-                                        const t64 = root.readU64At(buf, toff, .little);
-                                        if (t64 == 0) break;
-                                        const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
-                                        if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
-                                            // import by ordinal; skip for now
-                                        } else {
-                                            const name_rva2 = t64;
-                                            if (root.vaddrToFileOffset(buf.len, segmaps.items, name_rva2)) |name_off2| {
-                                                if (name_off2 + 2 < buf.len) {
-                                                    const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
-                                                    if (byname.len != 0) try imports.append(allocator, byname);
+                                                const name_rva2 = t;
+                                                if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva2))) |name_off2| {
+                                                    if (name_off2 + 2 < buf.len) {
+                                                        const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
+                                                        if (byname.len != 0) try dll_symbols.append(allocator, byname);
+                                                    }
+                                                } else {
+                                                    try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
                                                 }
-                                            } else {
-                                                try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
                                             }
+                                            toff += 4;
+                                        } else {
+                                            if (toff + 8 > buf.len) break;
+                                            const t64 = root.readU64At(buf, toff, .little);
+                                            if (t64 == 0) break;
+                                            const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
+                                            if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
+                                                // import by ordinal; skip for now
+                                            } else {
+                                                const name_rva2 = t64;
+                                                if (root.vaddrToFileOffset(buf.len, segmaps.items, name_rva2)) |name_off2| {
+                                                    if (name_off2 + 2 < buf.len) {
+                                                        const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
+                                                        if (byname.len != 0) try dll_symbols.append(allocator, byname);
+                                                    }
+                                                } else {
+                                                    try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
+                                                }
+                                            }
+                                            toff += 8;
                                         }
-                                        toff += 8;
                                     }
+                                } else {
+                                    try messages.append(allocator, root.Message{ .body = "import thunk table RVA unmapped" });
                                 }
+                            }
+
+                            // Move collected symbols into an owned slice and append ImportEntry
+                            if (dll_symbols.items.len != 0) {
+                                const syms_slice = try dll_symbols.toOwnedSlice(allocator);
+                                try imports.append(allocator, root.ImportEntry{ .dll = dllname, .symbols = syms_slice });
                             } else {
-                                try messages.append(allocator, root.Message{ .body = "import thunk table RVA unmapped" });
+                                try imports.append(allocator, root.ImportEntry{ .dll = dllname, .symbols = &[_][]const u8{} });
                             }
                         }
                     }
@@ -714,14 +733,18 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     // Expect DT_NEEDED libs to include libc and symbol imports like printf
     var found_libc: bool = false;
     var found_printf: bool = false;
-    for (desc.imports) |imp| {
-        if (std.mem.indexOf(u8, imp, "libc.so.6")) |pos| {
-            _ = pos;
-            found_libc = true;
+    for (desc.imports) |ie| {
+        if (ie.dll.len != 0) {
+            if (std.mem.indexOf(u8, ie.dll, "libc.so.6")) |pos| {
+                _ = pos;
+                found_libc = true;
+            }
         }
-        if (std.mem.indexOf(u8, imp, "printf")) |pos| {
-            _ = pos;
-            found_printf = true;
+        for (ie.symbols) |sym| {
+            if (std.mem.indexOf(u8, sym, "printf")) |pos| {
+                _ = pos;
+                found_printf = true;
+            }
         }
     }
     try expect(found_libc == true);
@@ -795,19 +818,31 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
     // Ensure imports contain non-empty names
     var found_printf_or_malloc: bool = false;
     var found_dyld_stub: bool = false;
-    for (desc.imports) |imp| {
-        try expect(imp.len > 0);
-        if (std.mem.indexOf(u8, imp, "printf")) |pos| {
-            _ = pos;
-            found_printf_or_malloc = true;
+    for (desc.imports) |ie| {
+        try expect(ie.dll.len > 0 or ie.symbols.len > 0);
+        if (ie.dll.len != 0) {
+            if (std.mem.indexOf(u8, ie.dll, "printf")) |pos| {
+                _ = pos;
+                found_printf_or_malloc = true;
+            }
+            if (std.mem.indexOf(u8, ie.dll, "malloc")) |pos| {
+                _ = pos;
+                found_printf_or_malloc = true;
+            }
         }
-        if (std.mem.indexOf(u8, imp, "malloc")) |pos| {
-            _ = pos;
-            found_printf_or_malloc = true;
-        }
-        if (std.mem.indexOf(u8, imp, "dyld_stub_binder")) |pos| {
-            _ = pos;
-            found_dyld_stub = true;
+        for (ie.symbols) |sym| {
+            if (std.mem.indexOf(u8, sym, "printf")) |pos| {
+                _ = pos;
+                found_printf_or_malloc = true;
+            }
+            if (std.mem.indexOf(u8, sym, "malloc")) |pos| {
+                _ = pos;
+                found_printf_or_malloc = true;
+            }
+            if (std.mem.indexOf(u8, sym, "dyld_stub_binder")) |pos| {
+                _ = pos;
+                found_dyld_stub = true;
+            }
         }
     }
     try expect(found_printf_or_malloc == true);
@@ -908,14 +943,18 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
     // Imports should still include libc and printf via .dynstr fallback
     var found_libc: bool = false;
     var found_printf: bool = false;
-    for (desc.imports) |imp| {
-        if (std.mem.indexOf(u8, imp, "libc.so.6")) |pos| {
-            _ = pos;
-            found_libc = true;
+    for (desc.imports) |ie| {
+        if (ie.dll.len != 0) {
+            if (std.mem.indexOf(u8, ie.dll, "libc.so.6")) |pos| {
+                _ = pos;
+                found_libc = true;
+            }
         }
-        if (std.mem.indexOf(u8, imp, "printf")) |pos| {
-            _ = pos;
-            found_printf = true;
+        for (ie.symbols) |sym| {
+            if (std.mem.indexOf(u8, sym, "printf")) |pos| {
+                _ = pos;
+                found_printf = true;
+            }
         }
     }
     try expect(found_libc == true);
@@ -1374,7 +1413,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
     defer sections_list.deinit(allocator);
     var segments_list = try std.ArrayList(root.Section).initCapacity(allocator, 0);
     defer segments_list.deinit(allocator);
-    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var imports = try std.ArrayList(root.ImportEntry).initCapacity(allocator, 0);
     defer imports.deinit(allocator);
     var exports = try std.ArrayList(root.Export).initCapacity(allocator, 0);
     defer exports.deinit(allocator);
@@ -1383,6 +1422,9 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
 
     var segmaps = try std.ArrayList(root.SegmentMap).initCapacity(allocator, 0);
     defer segmaps.deinit(allocator);
+
+    var mach_undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer mach_undef_syms.deinit(allocator);
 
     var symoff: usize = 0;
     var nsyms: usize = 0;
@@ -1575,7 +1617,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             const n_type = si.n_type;
             const type_ = @as(u32, n_type) & macho.N_TYPE;
             if (type_ == macho.N_UNDF) {
-                try imports.append(allocator, name);
+                try mach_undef_syms.append(allocator, name);
             } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                 try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
             }
@@ -1624,13 +1666,19 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                 const n_type = si.n_type;
                 const type_ = @as(u32, n_type) & macho.N_TYPE;
                 if (type_ == macho.N_UNDF) {
-                    try imports.append(allocator, name);
+                    try mach_undef_syms.append(allocator, name);
                 } else if ((@as(u32, n_type) & macho.N_EXT) != 0) {
                     try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
                 }
             }
             sidx += 1;
         }
+    }
+
+    // If we collected undefined Mach-O symbol names, append them as a single import entry
+    if (mach_undef_syms.items.len != 0) {
+        const syms_slice2 = try mach_undef_syms.toOwnedSlice(allocator);
+        try imports.append(allocator, root.ImportEntry{ .dll = &[_]u8{}, .symbols = syms_slice2 });
     }
 
     // Translate entry offset to virtual address using segmaps

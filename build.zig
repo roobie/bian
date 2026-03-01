@@ -28,6 +28,12 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
+    // Add optional dependency on Minish property-based testing framework.
+    // `zig fetch --save=minish "https://github.com/CogitatorTech/minish/archive/v0.1.0.tar.gz"`
+    // should have populated the package cache and project zon file used by Zig.
+    const minish_dep = b.dependency("minish", .{ .target = target, .optimize = optimize });
+    const minish_module = minish_dep.module("minish");
+
     const mod = b.addModule("bian", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
@@ -39,6 +45,9 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        // Make minish available to code importing this module (useful for
+        // property-based tests that import the library module).
+        .imports = &.{.{ .name = "minish", .module = minish_module }},
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -84,6 +93,9 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.addImport("args", b.dependency("args", .{ .target = target, .optimize = optimize }).module("args"));
+    // Also make minish available to the executable root module so examples/tests
+    // in the executable can import it as `@import("minish")`.
+    exe.root_module.addImport("minish", minish_module);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

@@ -568,6 +568,59 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                     if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva))) |name_off| {
                         const dllname = std.mem.sliceTo(buf[name_off..], 0);
                         if (dllname.len != 0) try imports.append(allocator, dllname);
+
+                        // Also parse import name thunk table to collect imported symbol names
+                        const oft_rva = root.readU32At(buf, imp_off + 0, .little);
+                        const first_thunk_rva = root.readU32At(buf, imp_off + 16, .little);
+                        const thunk_rva = if (oft_rva != 0) oft_rva else first_thunk_rva;
+                        if (thunk_rva != 0) {
+                            if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, thunk_rva))) |thunk_off| {
+                                var toff = thunk_off;
+                                while (true) {
+                                    if (is_pe32) {
+                                        if (toff + 4 > buf.len) break;
+                                        const t = root.readU32At(buf, toff, .little);
+                                        if (t == 0) break;
+                                        const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
+                                        if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
+                                            // import by ordinal; skip for now
+                                        } else {
+                                            const name_rva2 = t;
+                                            if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva2))) |name_off2| {
+                                                if (name_off2 + 2 < buf.len) {
+                                                    const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
+                                                    if (byname.len != 0) try imports.append(allocator, byname);
+                                                }
+                                            } else {
+                                                try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
+                                            }
+                                        }
+                                        toff += 4;
+                                    } else {
+                                        if (toff + 8 > buf.len) break;
+                                        const t64 = root.readU64At(buf, toff, .little);
+                                        if (t64 == 0) break;
+                                        const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
+                                        if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
+                                            // import by ordinal; skip for now
+                                        } else {
+                                            const name_rva2 = t64;
+                                            if (root.vaddrToFileOffset(buf.len, segmaps.items, name_rva2)) |name_off2| {
+                                                if (name_off2 + 2 < buf.len) {
+                                                    const byname = std.mem.sliceTo(buf[name_off2 + 2 ..], 0);
+                                                    if (byname.len != 0) try imports.append(allocator, byname);
+                                                }
+                                            } else {
+                                                try messages.append(allocator, root.Message{ .body = "import name RVA unmapped" });
+                                            }
+                                        }
+                                        toff += 8;
+                                    }
+                                }
+                            } else {
+                                try messages.append(allocator, root.Message{ .body = "import thunk table RVA unmapped" });
+                            }
+                        }
                     }
                     // detect null descriptor (all zeros)
                     const null_check = root.readU32At(buf, imp_off + 0, .little) | root.readU32At(buf, imp_off + 4, .little) | root.readU32At(buf, imp_off + 8, .little) | root.readU32At(buf, imp_off + 12, .little) | root.readU32At(buf, imp_off + 16, .little);

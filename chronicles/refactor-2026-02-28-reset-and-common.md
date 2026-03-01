@@ -148,3 +148,30 @@ Next steps:
 3. Continue to keep the chronicle and sigil bookmarks updated for each incremental move.
 
 Status: committed, tests passing, bookmarks updated.
+
+---
+
+Update — 2026-03-01: add ELF DT_* edge-case unit tests
+
+Summary of change:
+- Added focused unit tests in src/slice_decoders.zig that exercise DT_* edge-cases using the deterministic ELF fixture (testing/assets/elf-Linux-x64-bash):
+  - Missing DT_STRTAB mapping: corrupt the DT_STRTAB d_val to an unmapped virtual address and verify the decoder falls back to the .dynstr section to resolve DT_NEEDED names (e.g., libc.so.6, printf) and does not emit a "could not map DT_STRTAB" message.
+  - DT_BIND_NOW present: flip a dynamic entry tag to DT_BIND_NOW and verify the decoder infers RELRO=full.
+  - Malformed DT_STRSZ bounds: set DT_STRSZ to a size larger than the file and verify the decoder appends a "DT_STRTAB/DT_STRSZ out of bounds" message instead of panicking.
+
+Notes on implementation:
+- Tests perform in-memory mutations of the ELF fixture buffer (carefully using masked/checked writes) to trigger the desired edge-cases and then call decodeElfSlice on the modified buffer.
+- To avoid integer overflow panics in the decoder, the malformed DT_STRSZ test sets DT_STRSZ to (file_size + 1) (a deliberately out-of-bounds but representable value) rather than an extreme 0xFFFFFFFFFFFFFFFF sentinel.
+- All tests free the returned BinaryDescription owned slices to avoid allocator leaks during the test run.
+
+Commits related to tests:
+- 4e00972 — test(slice): add ELF dynamic edge-case tests (DT_STRTAB fallback, DT_BIND_NOW->RELRO, DT_STRSZ OOB)
+
+Verification:
+- Ran: zig fmt && zig build test. The new tests run alongside existing suite and pass locally.
+
+Next steps:
+1. If desired, expand edge-case tests to cover more malformed DT entry sequences (e.g., missing DT_NULL terminator, mis-ordered entries) and TLS/PLT edge-cases.
+2. After hardening ELF decoding, apply equivalent edge-case tests for PE and Mach-O dynamic/import/export parsing.
+
+Status: committed, tests passing, chronicle updated.

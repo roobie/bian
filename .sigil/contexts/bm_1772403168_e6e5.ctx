@@ -1,0 +1,2 @@
+>>>                 assert(std.mem.isAligned(@intFromPtr(&p[i]), block_size));
+                    while (true) {

@@ -1,0 +1,3 @@
+    /// std.mem.eql heavily optimized for slices of bytes.
+>>> fn eqlBytes(a: []const u8, b: []const u8) bool {
+        comptime assert(use_vectors_for_comparison);

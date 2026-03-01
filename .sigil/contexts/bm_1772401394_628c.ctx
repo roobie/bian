@@ -1,0 +1,3 @@
+            /// that that is done before calling this function.
+>>>         pub fn deinit(self: *Self) void {
+                self.unmanaged.deinit(self.allocator);

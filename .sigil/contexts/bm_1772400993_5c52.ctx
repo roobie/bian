@@ -1,0 +1,3 @@
+    pub fn create(a: Allocator, comptime T: type) Error!*T {
+>>>     if (@sizeOf(T) == 0) {
+            const ptr = comptime std.mem.alignBackward(usize, math.maxInt(usize), @alignOf(T));

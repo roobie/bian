@@ -1,0 +1,3 @@
+            /// initContext(allocator, ctx) instead.
+>>>         pub fn init(allocator: Allocator) Self {
+                if (@sizeOf(Context) != 0) {

@@ -1,0 +1,3 @@
+            /// Invalidates element pointers if additional memory is needed.
+>>>         pub fn appendSlice(self: *Self, items: []const T) Allocator.Error!void {
+                try self.ensureUnusedCapacity(items.len);

@@ -1,0 +1,3 @@
+            /// Invalidates element pointers if additional memory is needed.
+>>>         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) Allocator.Error!void {
+                if (@sizeOf(T) == 0) {

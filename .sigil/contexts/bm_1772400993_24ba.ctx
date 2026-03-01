@@ -1,0 +1,3 @@
+    /// If `T` is zero-bytes sized, the returned slice has a len of zero.
+>>> pub fn bytesAsSlice(comptime T: type, bytes: anytype) BytesAsSliceReturnType(T, @TypeOf(bytes)) {
+        // let's not give an undefined pointer to @ptrCast

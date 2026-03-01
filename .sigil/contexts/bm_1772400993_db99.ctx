@@ -1,0 +1,3 @@
+    /// Not yet implemented for every CPU architecture.
+>>> pub fn suggestVectorLength(comptime T: type) ?comptime_int {
+        return suggestVectorLengthForCpu(T, builtin.cpu);

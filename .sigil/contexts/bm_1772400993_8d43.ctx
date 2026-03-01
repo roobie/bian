@@ -1,0 +1,3 @@
+        const new_len_bytes = math.mul(usize, @sizeOf(T), new_len) catch return null;
+>>>     const new_ptr = self.rawRemap(old_memory, .fromByteUnits(alignment), new_len_bytes, @returnAddress()) orelse return null;
+        const new_memory: []align(alignment) u8 = @alignCast(new_ptr[0..new_len_bytes]);

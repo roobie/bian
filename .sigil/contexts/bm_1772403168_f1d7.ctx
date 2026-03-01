@@ -1,0 +1,2 @@
+>>> pub fn indexOfSentinel(comptime T: type, comptime sentinel: T, p: [*:sentinel]const T) usize {
+        var i: usize = 0;

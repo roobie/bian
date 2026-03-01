@@ -1,0 +1,3 @@
+            while (next) |node| : (next = node.prev) {
+>>>             const connection: *Connection = @alignCast(@fieldParentPtr("pool_node", node));
+                if (connection.protocol != criteria.protocol) continue;

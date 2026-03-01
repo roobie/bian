@@ -1,0 +1,3 @@
+        /// Creates a copy of this BufSet, using the same allocator.
+>>>     pub fn clone(self: *const BufSet) Allocator.Error!BufSet {
+            return self.cloneWithAllocator(self.allocator());

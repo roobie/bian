@@ -1,0 +1,2 @@
+>>> pub const Error = error{OutOfMemory};
+    pub const Log2Align = math.Log2Int(usize);

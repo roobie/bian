@@ -1,0 +1,3 @@
+        /// passed string immediately.
+>>>     pub fn insert(self: *BufSet, value: []const u8) !void {
+            const gop = try self.hash_map.getOrPut(value);

@@ -1,0 +1,2 @@
+>>> pub fn indexOfScalarPos(comptime T: type, slice: []const T, start_index: usize, value: T) ?usize {
+        if (start_index >= slice.len) return null;

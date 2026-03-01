@@ -1,0 +1,3 @@
+            /// Ensure that the queue can fit at least `new_capacity` items.
+>>>         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) !void {
+                var better_capacity = self.cap;

@@ -1,0 +1,2 @@
+>>> /// Returns a vector containing the first `len` integers in order from 0 to `len`-1.
+    /// For example, `iota(i32, 8)` will return a vector containing `.{0, 1, 2, 3, 4, 5, 6, 7}`.

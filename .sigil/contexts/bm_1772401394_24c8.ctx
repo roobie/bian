@@ -1,0 +1,2 @@
+>>>         pub fn deinit(self: Data, allocator: Allocator) void {
+                switch (self) {

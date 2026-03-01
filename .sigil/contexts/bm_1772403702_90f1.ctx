@@ -1,0 +1,3 @@
+            /// increase the unused capacity by one?
+>>>         pub fn remove(self: *Self, key: K) bool {
+                return self.unmanaged.removeContext(key, self.ctx);

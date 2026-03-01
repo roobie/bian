@@ -1,0 +1,3 @@
+    /// For allocating a single item, see `create`.
+>>> pub fn alloc(self: Allocator, comptime T: type, n: usize) Error![]T {
+        return self.allocAdvancedWithRetAddr(T, null, n, @returnAddress());

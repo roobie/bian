@@ -1,0 +1,3 @@
+            /// Extend the list by 1 element. Allocates more memory as necessary.
+>>>         pub fn append(self: *Self, gpa: Allocator, elem: T) !void {
+                try self.ensureUnusedCapacity(gpa, 1);

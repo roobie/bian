@@ -1,0 +1,3 @@
+        const new_len_bytes = math.mul(usize, @sizeOf(T), new_len) catch return false;
+>>>     return self.rawResize(old_memory, .fromByteUnits(alignment), new_len_bytes, @returnAddress());
+    }

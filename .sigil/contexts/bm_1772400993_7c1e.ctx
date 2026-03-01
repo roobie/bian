@@ -1,0 +1,3 @@
+        const non_const_ptr = @constCast(bytes.ptr);
+>>>     @memset(non_const_ptr[0..bytes_len], undefined);
+        self.rawFree(non_const_ptr[0..bytes_len], .fromByteUnits(Slice.alignment), @returnAddress());

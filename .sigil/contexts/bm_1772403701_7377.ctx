@@ -1,0 +1,3 @@
+            /// `expected_count` will not cause an allocation, and therefore cannot fail.
+>>>         pub fn ensureTotalCapacity(self: *Self, gpa: Allocator, new_capacity: usize) Oom!void {
+                if (@sizeOf(ByIndexContext) != 0)

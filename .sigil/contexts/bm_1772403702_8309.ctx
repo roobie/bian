@@ -1,0 +1,3 @@
+            /// Handles `kvs_list` the same way as `initComptime()`.
+>>>         pub fn init(kvs_list: anytype, allocator: mem.Allocator) !Self {
+                var self = Self{};

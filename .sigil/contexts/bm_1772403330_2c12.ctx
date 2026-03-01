@@ -1,0 +1,2 @@
+>>> pub fn suggestVectorLengthForCpu(comptime T: type, comptime cpu: std.Target.Cpu) ?comptime_int {
+        @setEvalBranchQuota(2_000);

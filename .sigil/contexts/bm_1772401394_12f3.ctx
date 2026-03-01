@@ -1,0 +1,2 @@
+>>>         pub fn deinit(self: *Self, allocator: Allocator) void {
+                self.pointer_stability.assertUnlocked();

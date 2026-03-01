@@ -1,0 +1,2 @@
+                var map: std.StringArrayHashMapUnmanaged(T) = .empty;
+>>>             errdefer map.deinit(allocator);

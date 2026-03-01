@@ -1,0 +1,2 @@
+>>> pub fn firstTrue(vec: anytype) ?VectorIndex(@TypeOf(vec)) {
+        const len = vectorLength(@TypeOf(vec));

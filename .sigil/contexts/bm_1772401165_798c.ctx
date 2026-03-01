@@ -1,0 +1,3 @@
+        const a = comptime (alignment orelse Alignment.of(T));
+>>>     const ptr: [*]align(a.toByteUnits()) T = @ptrCast(try self.allocWithSizeAndAlignment(@sizeOf(T), a, n, return_address));
+        return ptr[0..n];

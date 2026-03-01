@@ -1,0 +1,3 @@
+                // Otherwise, the new value takes precedence.
+>>>             const duped_value = try self.allocator.dupe(u8, value);
+                errdefer self.allocator.free(duped_value);

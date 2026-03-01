@@ -1,0 +1,3 @@
+    /// This can be used to zero-initialize any type for which it makes sense. Structs will be initialized recursively.
+>>> pub fn zeroes(comptime T: type) T {
+        switch (@typeInfo(T)) {

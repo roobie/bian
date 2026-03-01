@@ -1,0 +1,2 @@
+>>> test "indexOfSentinel vector paths" {
+        const Types = [_]type{ u8, u16, u32, u64 };

@@ -1,0 +1,3 @@
+        const last_b_chunk: Scan.Chunk = @bitCast(b[a.len - Scan.size ..][0..Scan.size].*);
+>>>     return !Scan.isNotEqual(last_a_chunk, last_b_chunk);
+    }

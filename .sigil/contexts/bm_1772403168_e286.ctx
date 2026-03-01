@@ -1,0 +1,3 @@
+                    } else {
+>>>                     @branchHint(.unlikely);
+                        // Would read over a page boundary. Per-byte at a time until aligned or found.

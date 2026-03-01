@@ -1,0 +1,3 @@
+            /// Release all allocated memory.
+>>>         pub fn deinit(self: *Self, gpa: Allocator) void {
+                gpa.free(self.allocatedSlice());

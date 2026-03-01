@@ -1,0 +1,3 @@
+            /// Initialize and return a priority queue.
+>>>         pub fn init(allocator: Allocator, context: Context) Self {
+                return Self{

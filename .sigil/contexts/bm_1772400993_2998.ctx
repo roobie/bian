@@ -1,0 +1,3 @@
+        if (builtin.single_threaded) {
+>>>         @compileError("Cannot spawn thread when building in single-threaded mode");
+        }

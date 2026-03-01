@@ -1,0 +1,3 @@
+            /// Deinitialize with `deinit` or use `toOwnedSlice`.
+>>>         pub fn init(gpa: Allocator) Self {
+                return Self{

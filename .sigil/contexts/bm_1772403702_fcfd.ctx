@@ -1,0 +1,3 @@
+            /// Invalidates element pointers if additional memory is needed.
+>>>         pub fn ensureTotalCapacity(self: *Self, gpa: Allocator, new_capacity: usize) Allocator.Error!void {
+                if (self.capacity >= new_capacity) return;

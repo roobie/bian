@@ -1,0 +1,3 @@
+                // which use paged memory, however should be confirmed before adding a new arch below.
+>>>             .aarch64, .x86, .x86_64 => if (std.simd.suggestVectorLength(T)) |block_len| {
+                    const page_size = std.heap.page_size_min;

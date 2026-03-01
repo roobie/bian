@@ -1,0 +1,2 @@
+>>>             const duped_name = try c.builder.arena.allocator().dupeZ(u8, slice);
+                const ref: Ir.Ref = @enumFromInt(c.builder.instructions.len);

@@ -1,0 +1,3 @@
+                    } else {
+>>>                     found_keys[i].allocated = try allocator.dupeZ(u8, value);
+                        @field(self, field.name) = found_keys[i].allocated;

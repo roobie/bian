@@ -1,0 +1,3 @@
+            /// Release all allocated memory.
+>>>         pub fn deinit(self: Self) void {
+                if (@sizeOf(T) > 0) {

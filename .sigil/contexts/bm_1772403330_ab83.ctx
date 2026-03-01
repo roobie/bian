@@ -1,0 +1,2 @@
+>>> fn vectorLength(comptime VectorType: type) comptime_int {
+        return switch (@typeInfo(VectorType)) {

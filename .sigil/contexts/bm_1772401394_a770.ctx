@@ -1,0 +1,3 @@
+            if (!verify) {
+>>>             crypto.secureZero(u8, &computed_tag);
+                @memset(m, undefined);

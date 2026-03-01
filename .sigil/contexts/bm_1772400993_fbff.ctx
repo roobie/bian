@@ -1,0 +1,3 @@
+                const base = try gpa.alignedAlloc(u8, .of(Plain), alloc_len);
+>>>             errdefer gpa.free(base);
+                const host_buffer = base[@sizeOf(Plain)..][0..remote_host.len];

@@ -1,0 +1,3 @@
+                .literal => {
+>>>                 const casted: *const Node.Literal = @alignCast(@fieldParentPtr("base", node));
+                    return casted.token;

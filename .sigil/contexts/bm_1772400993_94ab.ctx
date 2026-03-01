@@ -1,0 +1,3 @@
+    /// Copies each T from slices into a new slice that exactly holds all the elements.
+>>> pub fn concat(allocator: Allocator, comptime T: type, slices: []const []const T) Allocator.Error![]T {
+        return concatMaybeSentinel(allocator, T, slices, null);

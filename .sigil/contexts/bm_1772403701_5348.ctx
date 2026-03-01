@@ -1,0 +1,3 @@
+            /// Invalidates element pointers if additional memory is needed.
+>>>         pub fn append(self: *Self, item: T) Allocator.Error!void {
+                const new_item_ptr = try self.addOne();

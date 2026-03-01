@@ -1,0 +1,2 @@
+>>> pub fn firstIndexOfValue(vec: anytype, value: std.meta.Child(@TypeOf(vec))) ?VectorIndex(@TypeOf(vec)) {
+        const V = @TypeOf(vec);

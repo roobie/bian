@@ -1,0 +1,2 @@
+>>>         pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, new_size: Size) Allocator.Error!void {
+                if (@sizeOf(Context) != 0)

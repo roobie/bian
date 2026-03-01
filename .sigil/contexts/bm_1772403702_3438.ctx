@@ -1,0 +1,3 @@
+        /// Creates a duplicate of this bit set, using the new allocator.
+>>>     pub fn clone(self: *const Self, new_allocator: Allocator) !Self {
+            const num_masks = numMasks(self.bit_length);

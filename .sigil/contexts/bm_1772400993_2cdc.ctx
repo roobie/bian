@@ -1,0 +1,3 @@
+    /// or the allocator.
+>>> pub fn ValidationAllocator(comptime T: type) type {
+        return struct {

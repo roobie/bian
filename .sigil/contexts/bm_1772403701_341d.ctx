@@ -1,0 +1,3 @@
+            /// Creates a copy of this ArrayList, using the same allocator.
+>>>         pub fn clone(self: Self) Allocator.Error!Self {
+                var cloned = try Self.initCapacity(self.allocator, self.capacity);

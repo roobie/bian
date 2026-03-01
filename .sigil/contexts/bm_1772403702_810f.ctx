@@ -1,0 +1,3 @@
+            /// existing data, see `getOrPut`.
+>>>         pub fn put(self: *Self, key: K, value: V) Allocator.Error!void {
+                return self.unmanaged.putContext(self.allocator, key, value, self.ctx);

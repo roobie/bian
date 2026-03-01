@@ -1,0 +1,3 @@
+        /// string duplication.
+>>>     pub fn init(a: Allocator) BufSet {
+            return .{ .hash_map = BufSetHashMap.init(a) };

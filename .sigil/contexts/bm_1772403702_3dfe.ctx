@@ -1,0 +1,3 @@
+            /// queue.
+>>>         pub fn remove(self: *Self) T {
+                return self.removeIndex(0);

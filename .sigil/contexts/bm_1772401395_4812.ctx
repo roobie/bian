@@ -1,0 +1,2 @@
+        if (i != contents.len) contents = try comp.gpa.realloc(contents, i);
+>>>     errdefer @compileError("errdefers in callers would possibly free the realloced slice using the original len");

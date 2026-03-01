@@ -1,0 +1,2 @@
+>>>                     i += @divExact(std.mem.alignForward(usize, start_addr, block_size) - start_addr, @sizeOf(T));
+                    } else {

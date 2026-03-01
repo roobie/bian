@@ -1,0 +1,3 @@
+        // Figure out the fastest way to scan through the input in chunks.
+>>>     // Uses vectors when supported and falls back to usize/words when not.
+        const Scan = if (std.simd.suggestVectorLength(u8)) |vec_size|

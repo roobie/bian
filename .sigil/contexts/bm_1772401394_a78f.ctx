@@ -1,0 +1,3 @@
+            /// Clear the entire state, disabling compiler optimizations.
+>>>         pub fn secureZero(self: *Self) void {
+                std.crypto.secureZero(T, &self.st);

@@ -1,0 +1,2 @@
+>>>     pub inline fn of(comptime T: type) Alignment {
+            return comptime fromByteUnits(@alignOf(T));

@@ -1,0 +1,3 @@
+    /// Structs are initialized recursively.
+>>> pub fn zeroInit(comptime T: type, init: anytype) T {
+        const Init = @TypeOf(init);

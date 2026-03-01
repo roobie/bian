@@ -1,0 +1,2 @@
+>>>                 // First block may be unaligned
+                    const start_addr = @intFromPtr(&p[i]);

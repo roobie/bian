@@ -1,0 +1,3 @@
+            /// Create an ArrayHashMap instance which will use a specified allocator.
+>>>         pub fn init(allocator: Allocator) Self {
+                if (@sizeOf(Context) != 0)

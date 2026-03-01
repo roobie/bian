@@ -1,0 +1,3 @@
+                        new_ptr_info.sentinel_ptr = &@as(ptr_info.child, 0);
+>>>                     new_ptr_info.is_allowzero = false;
+                    },

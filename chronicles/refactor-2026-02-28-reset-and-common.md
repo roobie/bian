@@ -54,3 +54,70 @@ References:
 - Commit: cabd044 — added stronger unit tests asserting decodeMachoSlice populates sections, segments, imports, and exports (slice_decoders tests)
 - Commit: fa1688c — tightened Mach-O slice-decoder tests to assert presence of known imports/exports (look for printf/malloc, dyld_stub_binder, __mh_execute_header)
 - Chronology: see chronicles/deep-dive-2026-02-27-ape.md for the prior APE plan.
+
+---
+
+Update — 2026-03-01: move canonical BinaryDescription and BinaryBundle into common
+
+Summary of change:
+- Moved the canonical types and enums that describe a decoded binary into src/common.zig so they are a single source of truth for the codebase. The moved items include:
+  - BinaryFileKind, OsAbi, CpuArch, FileKind, Perhaps, RelroConfig, StrippedState
+  - PrettyPrintOptions and PrettyPrintOptionsDefault
+  - BinaryDescription (with writePretty)
+  - BinaryBundle (with free)
+- Updated src/root.zig to alias those types from common (pub const BinaryDescription = common.BinaryDescription; pub const BinaryBundle = common.BinaryBundle; and aliases for the enums and pretty-print options). This preserves the existing root API used elsewhere in the code while removing duplicate type definitions.
+- Kept detection-specific small helper types (ElfHint, MachoHint, PeHint, Stage0ParseResult) in root.zig because they are tiny and only used by detectFormat; reintroduced Stage0ParseResult after moving the canonical types to common to avoid circular imports.
+
+Test & hygiene fixes that accompanied the move:
+- Increased test fixture read limits in slice_decoders unit tests (ELF/PE/Mach-O) from small fixed sizes to a larger 16MiB cap to avoid std.fs.File.readToEndAlloc FileTooBig errors when reading large fixtures.
+- Ensured unit tests free all owned top-level slices (sections, segments, imports, exports, messages, path) returned by slice decoders to prevent allocator leaks reported by the test runner.
+
+Commits related to this step:
+- e31928c — test(slice): increase fixture read limits to 16MB to avoid FileTooBig; ensure to free returned slices
+- c175389 — test(slice): increase Mach-O test read limit and free returned slices in invariant test to avoid leaks
+- 1d70ebb — refactor(common): move canonical types BinaryDescription, BinaryBundle and related enums into src/common.zig; alias from root.zig
+- 27040ea — refactor(root): reintroduce Stage0 parse hints after moving canonical types to common
+
+Rationale:
+- Centralizing BinaryDescription/BinaryBundle in common removes duplication and makes it easy for slice_decoders, root, and future analysis modules to share types without circular dependencies.
+- Aliasing from root preserves the existing public API so other modules or external callers that reference root.* names do not need to be updated immediately.
+- Keeping minimal detection hints in root avoids moving detection concerns into common (which is intended as a small helper/types module) and keeps imports acyclic.
+
+Verification:
+- Ran: zig fmt src && zig build test after the changes. The test harness exercises the deterministic fixtures and prints BinaryDescription writePretty outputs for ELF and Mach-O fixtures; the suite completes and reports expected behavior.
+- Addressed earlier FileTooBig and leak warnings by increasing read caps and freeing owned slices in tests.
+
+Next steps (recommended):
+1. Replace the remaining local decoder implementations in root.zig with calls to the implementations in src/slice_decoders.zig (or add aliases) and remove duplicate decoder code once parity is confirmed.
+2. Continue the incremental move of any remaining canonical types or helpers into src/common.zig as needed (keeping the same aliasing strategy in root to preserve API compatibility).
+3. Add a chronicle entry for the next major step when you pick it (e.g., "replace root.decodeMacho with slice_dec.decodeMacho and remove old implementation").
+
+Status: chronicle updated to record the move of canonical types into src/common.zig and the accompanying test fixes.
+
+---
+
+Update — 2026-03-01: switch root slice decoders to src/slice_decoders.zig implementations
+
+Summary of change:
+- Replaced root's local slice-decoder functions with aliases to the implementations in src/slice_decoders.zig so there is a single authoritative implementation for in-memory slice parsing:
+  - pub const decodeElfSlice = slice_dec.decodeElfSlice
+  - pub const decodePESlice = slice_dec.decodePESlice
+  - pub const decodeMachoSlice is now provided by slice_dec (root previously kept an older local implementation).
+- To avoid a risky large deletion in one step, the prior local decodeMachoSlice implementation in root was renamed to decodeMachoSlice_local as a temporary measure. This preserves the code for review while ensuring the active API points to slice_decoders.
+
+Commits related to this step:
+- fd9949a — refactor(root): alias slice decoders to slice_decoders; rename old local decodeMachoSlice to decodeMachoSlice_local (temporary)
+
+Rationale:
+- Removing duplicate parsing code prevents divergence and reduces maintenance burden. All slice-decoder work (ELF/PE/Mach-O header parsing and symbol resolution) now lives in src/slice_decoders.zig and uses common.* helpers and canonical types.
+- A temporary rename (instead of deletion) keeps the old implementation available for inspection/review and makes the change reversible if an issue is discovered during further refactors.
+
+Verification:
+- Ran: zig fmt src && zig build test. Tests exercise both root-level analyzeBinary and slice-decoder unit tests that operate on in-memory fixtures; output shows expected BinaryDescription pretty-printing for ELF and Mach-O assets.
+
+Next recommended steps:
+1. After a short review window, delete decodeMachoSlice_local from root.zig to complete the de-duplication. Update the chronicle with the deletion commit.
+2. Consider making decodeMacho (the file-level decoder that handles FAT/thin) a thin wrapper that purely orchestrates slice_dec.decodeMachoSlice and constructs BinaryBundle; remove any lingering low-level parsing in root.
+3. Continue moving additional helpers into common as needed (keeping aliasing in root to ensure stable public API).
+
+Status: committed and tests passing locally. Review and deletion of the temporary local implementation recommended before merging the refactor into mainline.

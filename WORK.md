@@ -75,3 +75,72 @@ Last session: implemented (A): introduced a structured ImportEntry (dll + symbol
 
  Also: I recorded all these actions in the new chronicle entry; if you want I can push the commits to a remote, create an sg bookmark, or expand
  the chronicle with more tactical notes (e.g., locations of all modified tests).
+
+
+PE decoding implementation checklist
+
+- [ ] Task 1 — Populate segments[]
+    - Ensure BinaryDescription.segments is populated for PE images by creating Segment entries in decodePESlice.
+    - Where: src/slice_decoders.zig, inside the section header loop where segmaps are currently appended.
+    - Acceptance: unit test asserting desc.segments.len > 0 for a PE fixture.
+    - Branch/PR: feat/pe-segments
+    - Estimate: 1–2h
+
+- [ ] Task 2 — Import-by-ordinal handling
+    - Detect ordinal imports in thunk parsing and represent them in ImportEntry.symbols (initial approach: string marker like "#ordinal:123").
+    - Where: src/slice_decoders.zig, thunk parsing loop.
+    - Acceptance: test verifying ordinal import is captured.
+    - Branch/PR: feat/pe-import-ordinals
+    - Estimate: 2–4h
+
+- [ ] Task 3 — Surface pe_undef_syms or remove
+    - Convert pe_undef_syms into an ImportEntry with empty dll (like ELF) or remove if undesired.
+    - Where: src/slice_decoders.zig
+    - Acceptance: undefined symbols appear as ImportEntry with empty dll.
+    - Branch/PR: feat/pe-undef-syms (or include in import-ordinals PR)
+    - Estimate: 1–2h
+
+- [ ] Task 4 — Export table improvements (ordinals & forwarded exports)
+    - Parse AddressOfFunctions, AddressOfNameOrdinals, detect forwarded exports (function RVA points to forwarder string).
+    - Where: src/slice_decoders.zig, export parsing block.
+    - Acceptance: tests that assert export ordinals and forwarders are present.
+    - Branch/PR: feat/pe-exports
+    - Estimate: 4–8h
+
+- [ ] Task 5 — Base relocations + PDB debug extraction
+    - Parse IMAGE_DIRECTORY_ENTRY_BASERELOC to detect relocations and parse blocks; parse DebugDirectory CodeView to extract PDB path.
+    - Where: src/slice_decoders.zig, data directory parsing.
+    - Acceptance: messages/fields show relocations presence and PDB path if present.
+    - Branch/PR: feat/pe-reloc-pdb
+    - Estimate: 6–12h
+
+- [ ] Task 6 — Resource, certificates, TLS, exception directory (selective)
+    - Add parsing for resource/version info and certificate table (WIN_CERTIFICATE). Consider TLS callbacks and exception directory later if required.
+    - Where: src/slice_decoders.zig or helper files if complexity grows.
+    - Acceptance: resource/version info and certificate presence extracted for fixtures.
+    - Branch/PR: feat/pe-resources
+    - Estimate: 8–24h
+
+- [ ] Task 7 — Map section names -> SectionKind and refine permissions
+    - Map common names (.text, .rdata, .data, .rsrc, .reloc) to SectionKind and set read/write/exec permissions properly (combine bits instead of single-branch).
+    - Where: src/slice_decoders.zig, section header loop.
+    - Acceptance: tests assert SectionKind and permissions for fixtures.
+    - Branch/PR: feat/pe-section-kinds
+    - Estimate: 1–3h
+
+- [ ] Task 8 — Add PE fixtures and tests
+    - Add PE test assets under testing/assets and unit tests verifying imports (name & ordinal), exports (ordinals & forwarders), segments, relocations, PDB path, and resource/cert parsing.
+    - Where: testing/assets, tests in src/slice_decoders.zig or new test file.
+    - Acceptance: new tests added and run in CI; local zig test passes.
+    - Branch/PR: test/pe-fixtures
+    - Estimate: 3–8h
+
+Cross-cutting (apply to each PR)
+- [ ] Add a chronicle markdown entry under chronicles/ for each PR describing timestamp, participants, commands run, files changed, tests added, and next steps.
+- [ ] Run sg list/sg add as appropriate to bookmark changed locations (e.g., src/slice_decoders.zig lines). Include sg commands in chronicle.
+- [ ] Maintain defensive bounds checks (safeSlice, vaddrToFileOffset) and append messages instead of panics on malformed data.
+- [ ] Prefer minimal API changes; use string-encoded ordinals until a schema upgrade is desired.
+
+Next action
+- [ ] Start with Task 1 (populate segments) on branch feat/pe-segments; I can implement this change, add a unit test, create the chronicle entry, and open a PR.
+

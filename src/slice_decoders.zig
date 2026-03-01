@@ -529,9 +529,9 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
             .reserved2 = 0,
         });
 
-        // add segmap if there's raw data
+        // add segmap + segment if there's raw data
         if (pointer_to_raw != 0 and size_of_raw != 0) {
-            try segmaps.append(allocator, root.SegmentMap{ .fileoff = @as(u64, pointer_to_raw), .filesize = @as(u64, size_of_raw), .vmaddr = @as(u64, virtual_address) });
+            try root.appendSegmentAndMap(allocator, &segments, &segmaps, @as(u64, pointer_to_raw), @as(u64, size_of_raw), @as(u64, virtual_address), perm);
         }
     }
 
@@ -1107,6 +1107,27 @@ test "slice_decoders: decodePESlice errors on corrupt e_lfanew" {
     // If we get here, decodePESlice unexpectedly returned success
     allocator.free(buf);
     try expect(false);
+}
+
+test "slice_decoders: decodePESlice parses PE fixture and populates segments" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/pe-Windows-x64-cmd", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 16777216);
+    defer allocator.free(buf);
+
+    const desc = try decodePESlice(allocator, buf, null);
+    // Free top-level slices allocated by decodePESlice
+    defer if (desc.sections.len != 0) allocator.free(desc.sections);
+    defer if (desc.segments.len != 0) allocator.free(desc.segments);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
+    defer if (desc.exports.len != 0) allocator.free(desc.exports);
+    defer if (desc.messages.len != 0) allocator.free(desc.messages);
+    defer if (desc.path.len != 0) allocator.free(desc.path);
+
+    try expect(desc.format == root.BinaryFileKind.pe);
+    try expect(desc.segments.len > 0);
+    try expect(desc.sections.len > 0);
 }
 
 test "slice_decoders: decodeMachoSlice errors on oversized sizeofcmds" {

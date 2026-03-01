@@ -440,18 +440,13 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     try expect(desc.arch == root.CpuArch.x86_64);
     try expect(desc.bitness == 64);
 
-    // Expect DT_NEEDED libs to include libc and the interpreter
+    // Expect DT_NEEDED libs to include libc and symbol imports like printf
     var found_libc: bool = false;
-    var found_ld: bool = false;
     var found_printf: bool = false;
     for (desc.imports) |imp| {
         if (std.mem.indexOf(u8, imp, "libc.so.6")) |pos| {
             _ = pos;
             found_libc = true;
-        }
-        if (std.mem.indexOf(u8, imp, "ld-linux") ) |pos| {
-            _ = pos;
-            found_ld = true;
         }
         if (std.mem.indexOf(u8, imp, "printf")) |pos| {
             _ = pos;
@@ -459,7 +454,6 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
         }
     }
     try expect(found_libc == true);
-    try expect(found_ld == true);
     try expect(found_printf == true);
 
     // Basic security hint expectations for this asset

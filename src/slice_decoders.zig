@@ -390,8 +390,10 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
 pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
     if (buf.len < 64) return ParseError.TooSmall;
     if (buf[0] != 'M' or buf[1] != 'Z') return ParseError.InvalidHeader;
-    const e_lfanew = @as(usize, buf[0x3c]) | (@as(usize, buf[0x3d]) << 8) | (@as(usize, buf[0x3e]) << 16) | (@as(usize, buf[0x3f]) << 24);
-    if (e_lfanew + 4 > buf.len) return ParseError.Malformed;
+    const e_lfanew_u32 = root.readU32At(buf, 0x3c, .little);
+    const maybe_e_lfanew = u64_to_usize_checked(@as(u64, e_lfanew_u32));
+    if (maybe_e_lfanew == null) return ParseError.Malformed;
+    const e_lfanew = maybe_e_lfanew.?;
     if (e_lfanew + 4 > buf.len) return ParseError.Malformed;
     if (buf[e_lfanew] != 'P' or buf[e_lfanew + 1] != 'E' or buf[e_lfanew + 2] != 0 or buf[e_lfanew + 3] != 0) return ParseError.InvalidHeader;
 
@@ -1097,8 +1099,11 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             const hdr_ptr = @as(*align(1) const macho.mach_header_64, @ptrCast(buf.ptr));
             const hdr = hdr_ptr.*;
             hdr_size = @sizeOf(macho.mach_header_64);
-            ncmds = @as(usize, hdr.ncmds);
-            sizeofcmds = @as(usize, hdr.sizeofcmds);
+            const maybe_ncmds = u64_to_usize_checked(@as(u64, hdr.ncmds));
+            const maybe_sizeofcmds = u64_to_usize_checked(@as(u64, hdr.sizeofcmds));
+            if (maybe_ncmds == null or maybe_sizeofcmds == null) return ParseError.Malformed;
+            ncmds = maybe_ncmds.?;
+            sizeofcmds = maybe_sizeofcmds.?;
             hdr_cputype = hdr.cputype;
             hdr_filetype = hdr.filetype;
             hdr_flags = hdr.flags;
@@ -1107,8 +1112,11 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             const hdr_ptr = @as(*align(1) const macho.mach_header, @ptrCast(buf.ptr));
             const hdr = hdr_ptr.*;
             hdr_size = @sizeOf(macho.mach_header);
-            ncmds = @as(usize, hdr.ncmds);
-            sizeofcmds = @as(usize, hdr.sizeofcmds);
+            const maybe_ncmds = u64_to_usize_checked(@as(u64, hdr.ncmds));
+            const maybe_sizeofcmds = u64_to_usize_checked(@as(u64, hdr.sizeofcmds));
+            if (maybe_ncmds == null or maybe_sizeofcmds == null) return ParseError.Malformed;
+            ncmds = maybe_ncmds.?;
+            sizeofcmds = maybe_sizeofcmds.?;
             hdr_cputype = hdr.cputype;
             hdr_filetype = hdr.filetype;
             hdr_flags = hdr.flags;
@@ -1209,10 +1217,15 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                 }
             } else if (cmd == macho.LC.SYMTAB) {
                 const st = lc.cast(macho.symtab_command) orelse continue;
-                symoff = @as(usize, st.symoff);
-                nsyms = @as(usize, st.nsyms);
-                stroff = @as(usize, st.stroff);
-                strsize = @as(usize, st.strsize);
+                const maybe_symoff = u64_to_usize_checked(@as(u64, st.symoff));
+                const maybe_nsyms = u64_to_usize_checked(@as(u64, st.nsyms));
+                const maybe_stroff = u64_to_usize_checked(@as(u64, st.stroff));
+                const maybe_strsize = u64_to_usize_checked(@as(u64, st.strsize));
+                if (maybe_symoff == null or maybe_nsyms == null or maybe_stroff == null or maybe_strsize == null) continue;
+                symoff = maybe_symoff.?;
+                nsyms = maybe_nsyms.?;
+                stroff = maybe_stroff.?;
+                strsize = maybe_strsize.?;
             } else if (cmd == macho.LC.DYSYMTAB) {
                 const dt = lc.cast(macho.dysymtab_command) orelse continue;
                 ilocalsym = @as(usize, dt.ilocalsym);
@@ -1249,7 +1262,10 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             if (off + 8 > buf.len) return ParseError.Malformed;
             const cmd_val = root.readU32At(buf, off, m_endian);
             const opt_cmd = root.machoLCFromU32(cmd_val);
-            const cmdsize = @as(usize, root.readU32At(buf, off + 4, m_endian));
+            const cmdsize_u32 = root.readU32At(buf, off + 4, m_endian);
+            const maybe_cmdsize = u64_to_usize_checked(@as(u64, cmdsize_u32));
+            if (maybe_cmdsize == null) return ParseError.Malformed;
+            const cmdsize = maybe_cmdsize.?;
             if (cmdsize < 8) return ParseError.Malformed;
             if (off + cmdsize > buf.len) return ParseError.Malformed;
 
@@ -1267,7 +1283,10 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                     const section_size = @sizeOf(macho.section_64);
                     const sections_data = lc_data[@sizeOf(macho.segment_command_64)..];
                     var i: usize = 0;
-                    const nsects = @as(usize, root.readU32At(lc_data, 64, m_endian));
+                    const nsects_u32 = root.readU32At(lc_data, 64, m_endian);
+                    const maybe_nsects = u64_to_usize_checked(@as(u64, nsects_u32));
+                    if (maybe_nsects == null) break;
+                    const nsects = maybe_nsects.?;
                     while (i < nsects) : (i += 1) {
                         const start = i * section_size;
                         if (start + section_size > sections_data.len) break;
@@ -1285,7 +1304,10 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                     const section_size = @sizeOf(macho.section);
                     const sections_data = lc_data[@sizeOf(macho.segment_command)..];
                     var i: usize = 0;
-                    const nsects = @as(usize, root.readU32At(lc_data, 48, m_endian));
+                    const nsects_u32 = root.readU32At(lc_data, 48, m_endian);
+                    const maybe_nsects = u64_to_usize_checked(@as(u64, nsects_u32));
+                    if (maybe_nsects == null) break;
+                    const nsects = maybe_nsects.?;
                     while (i < nsects) : (i += 1) {
                         const start = i * section_size;
                         if (start + section_size > sections_data.len) break;

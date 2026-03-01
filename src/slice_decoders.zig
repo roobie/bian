@@ -32,16 +32,273 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         else => root.FileKind.unknown,
     };
 
+    // Build section name table (shstrtab) if present
+    var shstrtab: []const u8 = &[_]u8{};
+    if (header.shstrndx != 0) {
+        var sh_iter = header.iterateSectionHeadersBuffer(file_buf);
+        var idx: usize = 0;
+        while (true) {
+            const sh = try sh_iter.next() orelse break;
+            if (idx == @as(usize, header.shstrndx)) {
+                const off = @as(usize, sh.sh_offset);
+                const sz = @as(usize, sh.sh_size);
+                if (off + sz <= file_buf.len) shstrtab = file_buf[off .. off + sz];
+                break;
+            }
+            idx += 1;
+        }
+    }
+
     var sections = try std.ArrayList(root.Section).initCapacity(allocator, 0);
     defer sections.deinit(allocator);
     var segments = try std.ArrayList(root.Section).initCapacity(allocator, 0);
     defer segments.deinit(allocator);
+    var segmaps = try std.ArrayList(root.SegmentMap).initCapacity(allocator, 0);
+    defer segmaps.deinit(allocator);
     var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
     defer imports.deinit(allocator);
     var exports = try std.ArrayList(root.Export).initCapacity(allocator, 0);
     defer exports.deinit(allocator);
     var messages = try std.ArrayList(root.Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
+
+    // Collect sections
+    var sh_iter2 = header.iterateSectionHeadersBuffer(file_buf);
+    while (true) {
+        const sh = try sh_iter2.next() orelse break;
+        var name_slice: []const u8 = "unknown";
+        if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
+            const tail = shstrtab[@as(usize, sh.sh_name)..];
+            const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
+            name_slice = tail[0..end];
+        }
+        const perm = if ((sh.sh_flags & elf.SHF_EXECINSTR) != 0) root.Permission.execute else if ((sh.sh_flags & elf.SHF_WRITE) != 0) root.Permission.write else if ((sh.sh_flags & elf.SHF_ALLOC) != 0) root.Permission.read else root.Permission.none;
+        try sections.append(allocator, root.Section{
+            .name = name_slice,
+            .kind = root.SectionKind.unknown,
+            .size = sh.sh_size,
+            .file_offset = sh.sh_offset,
+            .permission = perm,
+            .flags = 0,
+            .reserved1 = 0,
+            .reserved2 = 0,
+        });
+    }
+
+    // Collect segments and segmaps
+    var ph_iter = header.iterateProgramHeadersBuffer(file_buf);
+    while (true) {
+        const ph = try ph_iter.next() orelse break;
+        const perm = if ((ph.p_flags & elf.PF_X) != 0) root.Permission.execute else if ((ph.p_flags & elf.PF_W) != 0) root.Permission.write else if ((ph.p_flags & elf.PF_R) != 0) root.Permission.read else root.Permission.none;
+        try root.appendSegmentAndMap(allocator, &segments, &segmaps, ph.p_offset, ph.p_filesz, ph.p_vaddr, perm);
+    }
+
+    // PT_DYNAMIC parsing
+    var dyn_off: usize = 0;
+    var dyn_sz: usize = 0;
+    var have_dyn: bool = false;
+    var dyn_bind_now: bool = false;
+
+    var ph_iter2 = header.iterateProgramHeadersBuffer(file_buf);
+    while (true) {
+        const ph = try ph_iter2.next() orelse break;
+        if (ph.p_type == elf.PT_DYNAMIC) {
+            dyn_off = @as(usize, ph.p_offset);
+            dyn_sz = @as(usize, ph.p_filesz);
+            have_dyn = true;
+            break;
+        }
+    }
+
+    var dt_needed_indices = std.ArrayList(usize).initCapacity(allocator, 0);
+    defer dt_needed_indices.deinit(allocator);
+    var dyn_str_vaddr: u64 = 0;
+    var dyn_str_sz: u64 = 0;
+
+    if (have_dyn) {
+        const dyn_region = root.safeSlice(file_buf, @as(u64, dyn_off), @as(u64, dyn_sz));
+        if (dyn_region == null) {
+            try messages.append(allocator, root.Message{ .body = "PT_DYNAMIC region out of bounds" });
+        } else {
+            var rdr = std.io.Reader.fixed(dyn_region.?);
+            while (true) {
+                if (header.is_64) {
+                    const d = try rdr.takeStruct(elf.Elf64_Dyn, header.endian);
+                    if (d.d_tag == elf.DT_NULL) break;
+                    if (d.d_tag == elf.DT_NEEDED) try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                    else if (d.d_tag == elf.DT_STRTAB) dyn_str_vaddr = d.d_val;
+                    else if (d.d_tag == elf.DT_STRSZ) dyn_str_sz = d.d_val;
+                    else if (d.d_tag == elf.DT_BIND_NOW) dyn_bind_now = true;
+                } else {
+                    const d = try rdr.takeStruct(elf.Elf32_Dyn, header.endian);
+                    if (d.d_tag == elf.DT_NULL) break;
+                    if (d.d_tag == elf.DT_NEEDED) try dt_needed_indices.append(allocator, @as(usize, d.d_val));
+                    else if (d.d_tag == elf.DT_STRTAB) dyn_str_vaddr = @as(u64, d.d_val);
+                    else if (d.d_tag == elf.DT_STRSZ) dyn_str_sz = @as(u64, d.d_val);
+                    else if (d.d_tag == elf.DT_BIND_NOW) dyn_bind_now = true;
+                }
+            }
+
+            if (dyn_str_vaddr != 0 and dyn_str_sz != 0) {
+                const maybe = root.vaddrToFileOffset(file_buf.len, segmaps.items, dyn_str_vaddr);
+                if (maybe) |str_off| {
+                    if (str_off + @as(usize, dyn_str_sz) <= file_buf.len) {
+                        const dynstr = file_buf[str_off .. str_off + @as(usize, dyn_str_sz)];
+                        for (dt_needed_indices.items) |name_off| {
+                            if (name_off < dynstr.len) {
+                                const s = mem.sliceTo(dynstr[name_off..], 0);
+                                if (s.len != 0) try imports.append(allocator, s);
+                            }
+                        }
+                    } else {
+                        try messages.append(allocator, root.Message{ .body = "DT_STRTAB/DT_STRSZ out of bounds" });
+                    }
+                } else {
+                    // fallback: search for .dynstr section among section headers
+                    var found_dynstr: bool = false;
+                    var sh_iter3 = header.iterateSectionHeadersBuffer(file_buf);
+                    while (true) {
+                        const sh = try sh_iter3.next() orelse break;
+                        var name_slice: []const u8 = "";
+                        if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
+                            const tail = shstrtab[@as(usize, sh.sh_name)..];
+                            const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
+                            name_slice = tail[0..end];
+                        }
+                        if (name_slice.len != 0 and mem.eql(u8, name_slice, ".dynstr")) {
+                            const off = @as(usize, sh.sh_offset);
+                            const sz = @as(usize, sh.sh_size);
+                            if (off + sz <= file_buf.len) {
+                                const dynstr = file_buf[off .. off + sz];
+                                for (dt_needed_indices.items) |name_off| {
+                                    if (name_off < dynstr.len) {
+                                        const s = mem.sliceTo(dynstr[name_off..], 0);
+                                        if (s.len != 0) try imports.append(allocator, s);
+                                    }
+                                }
+                                found_dynstr = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!found_dynstr) try messages.append(allocator, root.Message{ .body = "could not map DT_STRTAB vaddr to file offset" });
+                }
+            } else if (dt_needed_indices.items.len != 0) {
+                // try .dynstr fallback
+                var found_dynstr2: bool = false;
+                var sh_iter4 = header.iterateSectionHeadersBuffer(file_buf);
+                while (true) {
+                    const sh = try sh_iter4.next() orelse break;
+                    var name_slice: []const u8 = "";
+                    if (shstrtab.len != 0 and @as(usize, sh.sh_name) < shstrtab.len) {
+                        const tail = shstrtab[@as(usize, sh.sh_name)..];
+                        const end = mem.indexOfScalar(u8, tail, 0) orelse tail.len;
+                        name_slice = tail[0..end];
+                    }
+                    if (name_slice.len != 0 and mem.eql(u8, name_slice, ".dynstr")) {
+                        const off = @as(usize, sh.sh_offset);
+                        const sz = @as(usize, sh.sh_size);
+                        if (off + sz <= file_buf.len) {
+                            const dynstr = file_buf[off .. off + sz];
+                            for (dt_needed_indices.items) |name_off| {
+                                if (name_off < dynstr.len) {
+                                    const s = mem.sliceTo(dynstr[name_off..], 0);
+                                    if (s.len != 0) try imports.append(allocator, s);
+                                }
+                            }
+                            found_dynstr2 = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found_dynstr2) try messages.append(allocator, root.Message{ .body = "DT_NEEDED entries present but no dynstr found" });
+            }
+        }
+    }
+
+    // Symbol table parsing
+    var sh_iter_sym = header.iterateSectionHeadersBuffer(file_buf);
+    var sh_index: usize = 0;
+    while (true) {
+        const sh = try sh_iter_sym.next() orelse break;
+        if (sh.sh_type == elf.SHT_SYMTAB or sh.sh_type == elf.SHT_DYNSYM) {
+            const sym_off = @as(usize, sh.sh_offset);
+            const sym_sz = @as(usize, sh.sh_size);
+            var entsz = @as(usize, sh.sh_entsize);
+            if (entsz == 0) entsz = if (header.is_64) @sizeOf(elf.Elf64_Sym) else @sizeOf(elf.Elf32_Sym);
+            if (entsz == 0) continue;
+            const nsyms = if (entsz != 0) sym_sz / entsz else 0;
+            if (nsyms == 0) continue;
+
+            // find linked string table
+            var strtab_off: usize = 0;
+            var strtab_sz: usize = 0;
+            var st_iter = header.iterateSectionHeadersBuffer(file_buf);
+            var st_idx: usize = 0;
+            while (true) {
+                const st = try st_iter.next() orelse break;
+                if (st_idx == @as(usize, sh.sh_link)) {
+                    strtab_off = @as(usize, st.sh_offset);
+                    strtab_sz = @as(usize, st.sh_size);
+                    break;
+                }
+                st_idx += 1;
+            }
+            if (strtab_off + strtab_sz > file_buf.len) continue;
+            const strtab = file_buf[strtab_off .. strtab_off + strtab_sz];
+
+            var i_sym: usize = 0;
+            while (i_sym < nsyms) : (i_sym += 1) {
+                const entry_off = sym_off + i_sym * entsz;
+                if (entry_off + entsz > file_buf.len) break;
+                var rdr_sym = std.io.Reader.fixed(file_buf[entry_off..]);
+                if (header.is_64) {
+                    const sym = try rdr_sym.takeStruct(elf.Elf64_Sym, header.endian);
+                    const name_idx = @as(usize, sym.st_name);
+                    if (name_idx >= strtab.len) continue;
+                    const name = mem.sliceTo(strtab[name_idx..], 0);
+                    if (sym.st_shndx == elf.SHN_UNDEF) {
+                        if (name.len != 0) try imports.append(allocator, name);
+                    } else {
+                        const kind = if (sym.st_type() == elf.STT_FUNC) root.ExportKind.function else root.ExportKind.variable;
+                        if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = kind });
+                    }
+                } else {
+                    const sym32 = try rdr_sym.takeStruct(elf.Elf32_Sym, header.endian);
+                    const name_idx = @as(usize, sym32.st_name);
+                    if (name_idx >= strtab.len) continue;
+                    const name = mem.sliceTo(strtab[name_idx..], 0);
+                    if (sym32.st_shndx == elf.SHN_UNDEF) {
+                        if (name.len != 0) try imports.append(allocator, name);
+                    } else {
+                        const kind = if (sym32.st_type() == elf.STT_FUNC) root.ExportKind.function else root.ExportKind.variable;
+                        if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = kind });
+                    }
+                }
+            }
+        }
+        sh_index += 1;
+    }
+
+    // Security hints: NX, RELRO, PIE
+    var nx_hint = root.Perhaps.unknown;
+    var relro_hint = root.RelroConfig.unknown;
+    var ph_iter3 = header.iterateProgramHeadersBuffer(file_buf);
+    var found_gnu_stack: bool = false;
+    var found_gnu_relro: bool = false;
+    while (true) {
+        const ph = try ph_iter3.next() orelse break;
+        if (ph.p_type == elf.PT_GNU_STACK) {
+            found_gnu_stack = true;
+            if ((ph.p_flags & elf.PF_X) != 0) nx_hint = root.Perhaps.no else nx_hint = root.Perhaps.yes;
+        }
+        if (ph.p_type == elf.PT_GNU_RELRO) {
+            found_gnu_relro = true;
+            relro_hint = root.RelroConfig.partial;
+        }
+    }
+    if (dyn_bind_now) relro_hint = root.RelroConfig.full else if (!found_gnu_relro) relro_hint = root.RelroConfig.none;
+    const pie_hint = if (header.type == elf.ET.DYN) root.Perhaps.yes else if (header.type == elf.ET.EXEC) root.Perhaps.no else root.Perhaps.unknown;
 
     var desc_path: []const u8 = &[_]u8{};
     if (path) |p| {
@@ -59,10 +316,10 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         .endianess = header.endian,
         .file_kind = file_kind,
         .entrypoint_virtual_address = header.entry,
-        .pie = if (header.type == elf.ET.DYN) root.Perhaps.yes else root.Perhaps.no,
+        .pie = pie_hint,
         .aslr = root.Perhaps.unknown,
-        .nx = root.Perhaps.unknown,
-        .relro = root.RelroConfig.unknown,
+        .nx = nx_hint,
+        .relro = relro_hint,
         .stripped = root.StrippedState.unknown,
         .sections = try sections.toOwnedSlice(allocator),
         .segments = try segments.toOwnedSlice(allocator),

@@ -601,7 +601,9 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             if (t == 0) break;
                                             const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
                                             if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
-                                                // import by ordinal; skip for now
+                                                // import by ordinal: record as a placeholder symbol and diagnostic message
+                                                try dll_symbols.append(allocator, "#ordinal");
+                                                try messages.append(allocator, root.Message{ .body = "import by ordinal (32-bit)" });
                                             } else {
                                                 const name_rva2 = t;
                                                 if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva2))) |name_off2| {
@@ -620,7 +622,9 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             if (t64 == 0) break;
                                             const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
                                             if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
-                                                // import by ordinal; skip for now
+                                                // import by ordinal: record placeholder and diagnostic message
+                                                try dll_symbols.append(allocator, "#ordinal");
+                                                try messages.append(allocator, root.Message{ .body = "import by ordinal (64-bit)" });
                                             } else {
                                                 const name_rva2 = t64;
                                                 if (root.vaddrToFileOffset(buf.len, segmaps.items, name_rva2)) |name_off2| {

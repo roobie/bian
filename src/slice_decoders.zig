@@ -724,7 +724,7 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     // Free owned top-level slices from BinaryDescription after assertions
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -786,7 +786,7 @@ test "slice_decoders: decodeMachoSlice parses Mach-O header from fixture" {
     // Free top-level slices allocated by decodeMachoSlice
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -807,7 +807,7 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
     // Free top-level slices allocated by decodeMachoSlice
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -938,7 +938,7 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1017,7 +1017,7 @@ test "slice_decoders: DT_BIND_NOW triggers RELRO full" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1067,7 +1067,7 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1205,7 +1205,7 @@ test "slice_decoders: missing .dynstr section yields DT_NEEDED/no-dynstr message
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1325,7 +1325,7 @@ test "slice_decoders: premature DT_NULL causes DT_NEEDED to be ignored" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
+    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);

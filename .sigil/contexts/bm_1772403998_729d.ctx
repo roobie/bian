@@ -1,0 +1,3 @@
+    /// size is small. `prealloc_item_count` must be 0, or a power of 2.
+>>> pub fn SegmentedList(comptime T: type, comptime prealloc_item_count: usize) type {
+        return struct {

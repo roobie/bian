@@ -1,0 +1,2 @@
+>>>             pub fn next(it: *InorderIterator) ?*Node {
+                    const current = it.current;

@@ -1,0 +1,2 @@
+>>>         pub fn appendSlice(self: *Self, allocator: Allocator, items: []const T) Allocator.Error!void {
+                for (items) |item| {

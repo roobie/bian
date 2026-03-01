@@ -1,0 +1,2 @@
+>>>         pub fn append(self: *Self, allocator: Allocator, item: T) Allocator.Error!void {
+                const new_item_ptr = try self.addOne(allocator);

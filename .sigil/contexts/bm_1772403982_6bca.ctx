@@ -1,0 +1,2 @@
+>>> pub fn insertAfter(list: *DoublyLinkedList, existing_node: *Node, new_node: *Node) void {
+        new_node.prev = existing_node;

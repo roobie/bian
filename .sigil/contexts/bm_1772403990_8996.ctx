@@ -1,0 +1,3 @@
+    /// Remove and return the first node in the list.
+>>> pub fn popFirst(list: *SinglyLinkedList) ?*Node {
+        const first = list.first orelse return null;

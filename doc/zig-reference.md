@@ -194,11 +194,55 @@ Representative bookmarks (collections)
 - buf_set.init/insert/clone — 702_3c24 / 702_499b / 702_520e
 - bit_set.deinit/clone — 702_f1d4 / 702_3438
 
-How to use these
-- Use `sg show <id>` to jump to the bookmarked code and examine the surrounding idioms.
-- Copy idioms: accept allocator, provide deinit, use errdefer ordering, provide cloneWithAllocator, special-case zero-sized elements where appropriate.
+Specialized collections
+-----------------------
+The std tree contains several specialized container implementations that follow different ownership and performance trade-offs. Below are the idioms to reproduce and representative bookmarks for these specialized containers.
 
-Suggested next steps
-- I can extract a short collection-specific checklist (JSON) mapping these container idioms to bookmark IDs for programmatic consumption.
-- Continue sweeping other collection-like files (segmented_list, DoublyLinkedList, SinglyLinkedList, treap) and add bookmarks.
+- Node-based linked lists (SinglyLinkedList / DoublyLinkedList)
+  - Manual nodes: these modules provide non-owning node operations (insertAfter/insertBefore, remove, prepend/append). Callers typically allocate nodes themselves and link/unlink them; the APIs avoid hidden allocations.
+  - O(1) splices: DoublyLinkedList supports O(1) concat/move operations (useful for queuing / work-stealing patterns).
+  - Iterator invalidation: removing or moving nodes invalidates iterators that point into the list; document this in caller-facing APIs.
+  - Bookmarks:
+    - DoublyLinkedList.insertAfter — 982_6bca
+    - DoublyLinkedList.insertBefore — 982_e8eb
+    - DoublyLinkedList.concatByMoving — 982_c1a0
+    - DoublyLinkedList.append/prepend/pop/popFirst — 982_87f8 / 982_a129 / 982_33b6 / 982_4516
+    - SinglyLinkedList.prepend/remove/popFirst — 990_0e0d / 990_f040 / 990_8996
+
+- SegmentedList
+  - Use-case: large or growing sequences where reallocating a single backing array is expensive or undesirable. Implemented as fixed-size segments to amortize growth and preserve existing segment allocations.
+  - APIs accept an allocator and provide addOne (returning a pointer to construct in-place), appendSlice, shrink/clear variants that control capacity freeing.
+  - Bookmark highlights:
+    - SegmentedList type — 998_729d
+    - SegmentedList.deinit — 998_b25d
+    - SegmentedList.append/addOne/pop — 998_fd5a / 998_8ee1 / 998_ce98
+    - Iteration across segments — 999_fa00
+
+- Treap (randomized BST)
+  - Treap is a BST with randomized priorities: common API patterns include getEntryFor (lookup/insertion point), inorder iterators, and bulk init from a slice with RNG.
+  - Use when you want balanced-tree semantics without deterministic rotations; good for implementations that need ordered sets/maps with expected-logarithmic depths.
+  - Bookmarks:
+    - Treap type — 004_f912
+    - Treap.getEntryFor — 004_9fd4
+    - Treap.inorderIterator / next — 004_78bd / 004_6cee
+    - Treap.init (build from slice and RNG) — 004_66e6
+
+- PriorityDequeue (deque supporting both min/max operations)
+  - Unlike a single-ended PriorityQueue, PriorityDequeue implementations expose peekMin/peekMax and removeMin/removeMax semantics and allow removal by index. They are often backed by an array heap and accept a comparator context.
+  - APIs usually include add/addSlice, ensureTotalCapacity, iterator for linear traversal (note: order is not sorted for linear iteration).
+  - Bookmarks:
+    - PriorityDequeue type — 012_73bd
+    - init/add/addSlice — 012_40d3 / 012_9031 / 012_3a8c
+    - peekMin/removeMin/removeIndex — 012_045f / 012_988f / 012_1760
+    - ensureTotalCapacity / iterator — 012_7407 / 012_c0e7
+
+How to use these
+- For node-based lists, prefer non-owning node APIs when you need O(1) splices or explicit node lifetime management; document who owns nodes and how to free them.
+- For segmented lists, use addOne to construct elements in-place when element construction is expensive or when avoiding temporary allocations matters.
+- For treap, use getEntryFor to find or create entries and prefer inorderIterator when you need ordered traversal.
+- For priority dequeues, document that linear iteration does not yield elements in sorted order; use repeated removeMin/removeMax to consume in order.
+
+Suggested next steps (collections)
+- Continue sweeping other container-like files and add bookmarks for tests and edge-case patterns (e.g., iterator tests, failing_allocator behavior, zero-sized element handling in containers).
+- Optionally produce a JSON checklist mapping these specialized idiom names to bookmark IDs for programmatic tooling.
 

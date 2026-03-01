@@ -1,0 +1,3 @@
+    ///     new_node: Pointer to the new node to insert.
+>>> pub fn prepend(list: *DoublyLinkedList, new_node: *Node) void {
+        if (list.first) |first| {

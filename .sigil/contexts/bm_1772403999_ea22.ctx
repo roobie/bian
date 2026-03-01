@@ -1,0 +1,3 @@
+            /// Only grows capacity, or retains current capacity.
+>>>         pub fn growCapacity(self: *Self, allocator: Allocator, new_capacity: usize) Allocator.Error!void {
+                const new_cap_shelf_count = shelfCount(new_capacity);

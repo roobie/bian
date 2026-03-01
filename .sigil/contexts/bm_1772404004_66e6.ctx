@@ -1,0 +1,2 @@
+>>>         pub fn init(slice: []T, rng: std.Random) Self {
+                return Self{

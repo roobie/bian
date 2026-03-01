@@ -1,0 +1,2 @@
+>>>     pub fn insertAfter(node: *Node, new_node: *Node) void {
+            new_node.next = node.next;

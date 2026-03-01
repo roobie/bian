@@ -1,0 +1,3 @@
+    /// `fn lessThan(context: void, a: T, b: T) Order { _ = context; return std.math.order(a, b); }`
+>>> pub fn PriorityDequeue(comptime T: type, comptime Context: type, comptime compareFn: fn (context: Context, a: T, b: T) Order) type {
+        return struct {

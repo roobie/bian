@@ -1,0 +1,3 @@
+            /// Use `getEntryForExisting()` to replace/remove this Node from the treap.
+>>>         pub fn getMin(self: Self) ?*Node {
+                if (self.root) |root| return extremeInSubtreeOnDirection(root, 0);

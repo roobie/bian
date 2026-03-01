@@ -1,0 +1,3 @@
+    ///     A pointer to the first node in the list.
+>>> pub fn popFirst(list: *DoublyLinkedList) ?*Node {
+        const first = list.first orelse return null;

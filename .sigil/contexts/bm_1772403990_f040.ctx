@@ -1,0 +1,2 @@
+>>> pub fn remove(list: *SinglyLinkedList, node: *Node) void {
+        if (list.first == node) {

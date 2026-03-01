@@ -1,0 +1,3 @@
+            /// TODO update this and related methods to match the conventions set by ArrayList
+>>>         pub fn setCapacity(self: *Self, allocator: Allocator, new_capacity: usize) Allocator.Error!void {
+                if (prealloc_item_count != 0) {

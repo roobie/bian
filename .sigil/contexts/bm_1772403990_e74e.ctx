@@ -1,0 +1,3 @@
+        /// Remove the node after the one provided, returning it.
+>>>     pub fn removeNext(node: *Node) ?*Node {
+            const next_node = node.next orelse return null;

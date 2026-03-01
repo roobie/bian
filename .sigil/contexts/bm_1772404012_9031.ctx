@@ -1,0 +1,3 @@
+            /// Insert a new element, maintaining priority.
+>>>         pub fn add(self: *Self, elem: T) !void {
+                try self.ensureUnusedCapacity(1);

@@ -1,0 +1,3 @@
+    ///     node: Pointer to the node to be removed.
+>>> pub fn remove(list: *DoublyLinkedList, node: *Node) void {
+        if (node.prev) |prev_node| {

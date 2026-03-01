@@ -1,0 +1,3 @@
+            /// The Entry act's as a slot in the treap to insert/replace/remove the node associated with the key.
+>>>         pub fn getEntryFor(self: *Self, key: Key) Entry {
+                var parent: ?*Node = undefined;

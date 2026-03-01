@@ -1,0 +1,2 @@
+>>>         pub fn next(self: *Self) ?*T {
+                if (self.index >= self.slice.len) return null;

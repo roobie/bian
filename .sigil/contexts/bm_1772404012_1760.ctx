@@ -1,0 +1,3 @@
+            /// order.
+>>>         pub fn removeIndex(self: *Self, index: usize) T {
+                assert(self.len > index);

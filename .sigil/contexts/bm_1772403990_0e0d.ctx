@@ -1,0 +1,2 @@
+>>> pub fn prepend(list: *SinglyLinkedList, new_node: *Node) void {
+        new_node.next = list.first;

@@ -1,0 +1,2 @@
+>>>         pub fn deinit(self: *Self, allocator: Allocator) void {
+                self.freeShelves(allocator, @as(ShelfIndex, @intCast(self.dynamic_segments.len)), 0);

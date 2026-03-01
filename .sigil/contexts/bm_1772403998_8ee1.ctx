@@ -1,0 +1,2 @@
+>>>         pub fn addOne(self: *Self, allocator: Allocator) Allocator.Error!*T {
+                const new_length = self.len + 1;

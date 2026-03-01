@@ -437,17 +437,184 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
         file_kind = root.FileKind.executable;
     }
 
-    const desc = root.BinaryDescription{
+    // Read COFF header fields to get section table location and optional header
+    const number_of_sections = @as(usize, root.readU16LE(buf, coff_off + 2));
+    const size_of_optional_header = @as(usize, root.readU16LE(buf, coff_off + 16));
+
+    const optional_header_off = coff_off + 20;
+    if (optional_header_off + size_of_optional_header > buf.len) return ParseError.Malformed;
+
+    const opt = buf[optional_header_off .. optional_header_off + size_of_optional_header];
+    if (opt.len < 2) return ParseError.Malformed;
+    const magic = root.readU16LE(opt, 0);
+    const is_pe32 = (magic == 0x10b);
+    const is_pe32_plus = (magic == 0x20b);
+
+    // AddressOfEntryPoint is at offset 0x10 in both PE32 and PE32+
+    if (opt.len < 0x14) return ParseError.Malformed;
+    const address_of_entry = root.readU32At(opt, 0x10, .little);
+
+    var image_base: u64 = 0;
+    if (is_pe32) {
+        if (opt.len < 0x1C + 4) return ParseError.Malformed;
+        image_base = @as(u64, root.readU32At(opt, 0x1C, .little));
+    } else if (is_pe32_plus) {
+        // PE32+: ImageBase is 8 bytes at offset 0x18
+        if (opt.len < 0x18 + 8) return ParseError.Malformed;
+        image_base = root.readU64At(opt, 0x18, .little);
+    }
+
+    const entry_va = image_base + @as(u64, address_of_entry);
+
+    // DllCharacteristics offset: 0x46 for PE32, 0x5E for PE32+
+    var dll_chars: u16 = 0;
+    if (is_pe32) {
+        if (opt.len >= 0x48) dll_chars = root.readU16LE(opt, 0x46);
+    } else if (is_pe32_plus) {
+        if (opt.len >= 0x60) dll_chars = root.readU16LE(opt, 0x5E);
+    }
+
+    const IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE: u16 = 0x0040;
+    const IMAGE_DLLCHARACTERISTICS_NX_COMPAT: u16 = 0x0100;
+
+    var aslr_hint = root.Perhaps.unknown;
+    var nx_hint = root.Perhaps.unknown;
+    if ((dll_chars & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) != 0) aslr_hint = root.Perhaps.yes else aslr_hint = root.Perhaps.no;
+    if ((dll_chars & IMAGE_DLLCHARACTERISTICS_NX_COMPAT) != 0) nx_hint = root.Perhaps.yes else nx_hint = root.Perhaps.no;
+
+    // Parse section headers
+    const section_table_off = optional_header_off + size_of_optional_header;
+    const section_entry_size = 40;
+    if (section_table_off + number_of_sections * section_entry_size > buf.len) return ParseError.Malformed;
+
+    var segmaps = try std.ArrayList(root.SegmentMap).initCapacity(allocator, number_of_sections);
+    defer segmaps.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < number_of_sections) : (i += 1) {
+        const off = section_table_off + i * section_entry_size;
+        const name_bytes = buf[off .. off + 8];
+        const end = std.mem.indexOfScalar(u8, name_bytes, 0) orelse name_bytes.len;
+        const name = name_bytes[0..end];
+        const virtual_size = root.readU32At(buf, off + 8, .little);
+        const virtual_address = root.readU32At(buf, off + 12, .little);
+        const size_of_raw = root.readU32At(buf, off + 16, .little);
+        const pointer_to_raw = root.readU32At(buf, off + 20, .little);
+        const characteristics_sec = root.readU32At(buf, off + 36, .little);
+        const perm = if ((characteristics_sec & 0x20000000) != 0) root.Permission.execute else if ((characteristics_sec & 0x80000000) != 0) root.Permission.write else if ((characteristics_sec & 0x40000000) != 0) root.Permission.read else root.Permission.none;
+
+        try sections.append(allocator, root.Section{
+            .name = name,
+            .kind = root.SectionKind.unknown,
+            .size = @as(u64, virtual_size),
+            .file_offset = @as(u64, pointer_to_raw),
+            .permission = perm,
+            .flags = characteristics_sec,
+            .reserved1 = 0,
+            .reserved2 = 0,
+        });
+
+        // add segmap if there's raw data
+        if (pointer_to_raw != 0 and size_of_raw != 0) {
+            try segmaps.append(allocator, root.SegmentMap{ .fileoff = @as(u64, pointer_to_raw), .filesize = @as(u64, size_of_raw), .vmaddr = @as(u64, virtual_address) });
+        }
+    }
+
+    // Parse DataDirectory: import/export/debug
+    const data_dir_off = optional_header_off + (if (is_pe32) @as(usize, 96) else @as(usize, 112));
+    if (data_dir_off + 8 * 16 <= buf.len) {
+        const export_rva = root.readU32At(buf, data_dir_off + 0 * 8 + 0, .little);
+        const export_sz = root.readU32At(buf, data_dir_off + 0 * 8 + 4, .little);
+        const import_rva = root.readU32At(buf, data_dir_off + 1 * 8 + 0, .little);
+        const import_sz = root.readU32At(buf, data_dir_off + 1 * 8 + 4, .little);
+        const debug_rva = root.readU32At(buf, data_dir_off + 6 * 8 + 0, .little);
+        const debug_sz = root.readU32At(buf, data_dir_off + 6 * 8 + 4, .little);
+
+        // debug info present
+        var debug_present: bool = false;
+        if (debug_rva != 0 and debug_sz != 0) debug_present = true;
+
+        // Parse exports
+        if (export_rva != 0 and export_sz != 0) {
+            if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, export_rva))) |off| {
+                if (off + 40 <= buf.len) {
+                    const ed = buf[off .. off + 40];
+                    const number_of_names = root.readU32At(ed, 24, .little);
+                    const address_of_names_rva = root.readU32At(ed, 32, .little);
+                    if (number_of_names != 0 and address_of_names_rva != 0) {
+                        if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, address_of_names_rva))) |names_off| {
+                            var ni: usize = 0;
+                            while (ni < @as(usize, number_of_names)) : (ni += 1) {
+                                const name_rva = root.readU32At(buf, names_off + ni * 4, .little);
+                                if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva))) |n_off| {
+                                    const name = std.mem.sliceTo(buf[n_off..], 0);
+                                    if (name.len != 0) try exports.append(allocator, root.Export{ .name = name, .kind = root.ExportKind.unknown });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse imports (collect DLL names and imported symbols)
+        if (import_rva != 0 and import_sz != 0) {
+            var imp_desc_rva = import_rva;
+            while (imp_desc_rva != 0) {
+                if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, imp_desc_rva))) |imp_off| {
+                    if (imp_off + 20 > buf.len) break;
+                    const name_rva = root.readU32At(buf, imp_off + 12, .little);
+                    if (name_rva == 0) break;
+                    if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, name_rva))) |name_off| {
+                        const dllname = std.mem.sliceTo(buf[name_off..], 0);
+                        if (dllname.len != 0) try imports.append(allocator, dllname);
+                    }
+                    // detect null descriptor (all zeros)
+                    const null_check = root.readU32At(buf, imp_off + 0, .little) | root.readU32At(buf, imp_off + 4, .little) | root.readU32At(buf, imp_off + 8, .little) | root.readU32At(buf, imp_off + 12, .little) | root.readU32At(buf, imp_off + 16, .little);
+                    if (null_check == 0) break;
+                    imp_desc_rva += 20;
+                } else break;
+            }
+        }
+
+        // Assign debug flag
+        const desc = root.BinaryDescription{
+            .format = root.BinaryFileKind.pe,
+            .os_abi = root.OsAbi.windows,
+            .arch = arch,
+            .bitness = bitness,
+            .endianess = Endian.little,
+            .file_kind = file_kind,
+            .entrypoint_virtual_address = entry_va,
+            .pie = root.Perhaps.unknown,
+            .aslr = aslr_hint,
+            .nx = nx_hint,
+            .relro = root.RelroConfig.not_applicable,
+            .stripped = root.StrippedState.unknown,
+            .sections = try sections.toOwnedSlice(allocator),
+            .segments = try segments.toOwnedSlice(allocator),
+            .imports = try imports.toOwnedSlice(allocator),
+            .exports = try exports.toOwnedSlice(allocator),
+            .messages = try messages.toOwnedSlice(allocator),
+            .path = desc_path,
+            .debug_info_present = debug_present,
+        };
+
+        return desc;
+    }
+
+    // Fallback: no data directories available; return minimal desc
+    const desc2 = root.BinaryDescription{
         .format = root.BinaryFileKind.pe,
         .os_abi = root.OsAbi.windows,
         .arch = arch,
         .bitness = bitness,
         .endianess = Endian.little,
         .file_kind = file_kind,
-        .entrypoint_virtual_address = 0,
+        .entrypoint_virtual_address = entry_va,
         .pie = root.Perhaps.unknown,
-        .aslr = root.Perhaps.unknown,
-        .nx = root.Perhaps.unknown,
+        .aslr = aslr_hint,
+        .nx = nx_hint,
         .relro = root.RelroConfig.unknown,
         .stripped = root.StrippedState.unknown,
         .sections = try sections.toOwnedSlice(allocator),
@@ -459,7 +626,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
         .debug_info_present = false,
     };
 
-    return desc;
+    return desc2;
 }
 
 // Unit tests for the minimal slice decoder placeholders. These tests exercise

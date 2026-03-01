@@ -1,0 +1,3 @@
+            /// Invalidated if the queue is modified.
+>>>         pub fn iterator(self: *Self) Iterator {
+                return Iterator{

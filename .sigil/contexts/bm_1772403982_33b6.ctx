@@ -1,0 +1,3 @@
+    ///     A pointer to the last node in the list.
+>>> pub fn pop(list: *DoublyLinkedList) ?*Node {
+        const last = list.last orelse return null;

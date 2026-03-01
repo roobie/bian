@@ -1,0 +1,2 @@
+>>>         pub fn writeToSlice(self: *Self, dest: []T, start: usize) void {
+                const end = start + dest.len;

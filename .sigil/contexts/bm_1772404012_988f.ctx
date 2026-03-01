@@ -1,0 +1,3 @@
+            /// `null` if empty.
+>>>         pub fn removeMinOrNull(self: *Self) ?T {
+                return if (self.len > 0) self.removeMin() else null;

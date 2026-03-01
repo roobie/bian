@@ -1,0 +1,3 @@
+    /// computing it.
+>>> pub fn len(list: SinglyLinkedList) usize {
+        if (list.first) |n| {

@@ -1,0 +1,2 @@
+>>> pub fn Treap(comptime Key: type, comptime compareFn: anytype) type {
+        return struct {

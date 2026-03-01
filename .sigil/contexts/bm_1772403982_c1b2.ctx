@@ -1,0 +1,3 @@
+    /// computing it.
+>>> pub fn len(list: DoublyLinkedList) usize {
+        var count: usize = 0;

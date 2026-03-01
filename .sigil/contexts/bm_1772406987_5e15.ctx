@@ -1,0 +1,2 @@
+>>>         // add segmap + segment if there's raw data
+            if (pointer_to_raw != 0 and size_of_raw != 0) {

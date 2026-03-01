@@ -27,6 +27,7 @@ pub const readU32At = common.readU32At;
 pub const readU64At = common.readU64At;
 pub const readI32At = common.readI32At;
 pub const SegmentMap = common.SegmentMap;
+pub const ImportEntry = common.ImportEntry;
 pub const zslice = common.zslice;
 pub const vaddrToFileOffset = common.vaddrToFileOffset;
 pub const safeSlice = common.safeSlice;
@@ -625,7 +626,7 @@ pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescripti
     // Free top-level slices allocated with toOwnedSlice()
     if (desc.sections.len != 0) allocator.free(desc.sections);
     if (desc.segments.len != 0) allocator.free(desc.segments);
-    if (desc.imports.len != 0) allocator.free(desc.imports);
+    if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     if (desc.exports.len != 0) allocator.free(desc.exports);
     if (desc.messages.len != 0) allocator.free(desc.messages);
 }

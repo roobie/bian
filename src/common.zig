@@ -78,6 +78,13 @@ pub const Section = struct {
     reserved2: u32,
 };
 
+pub fn freeImportEntries(allocator: std.mem.Allocator, imports: []ImportEntry) void {
+    for (imports) |ie| {
+        if (ie.symbols.len != 0) allocator.free(ie.symbols);
+    }
+    allocator.free(imports);
+}
+
 pub const ExportKind = enum { unknown, function, variable };
 
 pub const Export = struct {

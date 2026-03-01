@@ -425,12 +425,15 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
     defer sections.deinit(allocator);
     var segments = try std.ArrayList(root.Section).initCapacity(allocator, 0);
     defer segments.deinit(allocator);
-    var imports = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    var imports = try std.ArrayList(root.ImportEntry).initCapacity(allocator, 0);
     defer imports.deinit(allocator);
     var exports = try std.ArrayList(root.Export).initCapacity(allocator, 0);
     defer exports.deinit(allocator);
     var messages = try std.ArrayList(root.Message).initCapacity(allocator, 0);
     defer messages.deinit(allocator);
+
+    var pe_undef_syms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer pe_undef_syms.deinit(allocator);
 
     var desc_path: []const u8 = &[_]u8{};
     if (path) |p| {
@@ -721,7 +724,7 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     // Free owned top-level slices from BinaryDescription after assertions
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -783,7 +786,7 @@ test "slice_decoders: decodeMachoSlice parses Mach-O header from fixture" {
     // Free top-level slices allocated by decodeMachoSlice
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -804,7 +807,7 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
     // Free top-level slices allocated by decodeMachoSlice
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -935,7 +938,7 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1014,7 +1017,7 @@ test "slice_decoders: DT_BIND_NOW triggers RELRO full" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1064,7 +1067,7 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1202,7 +1205,7 @@ test "slice_decoders: missing .dynstr section yields DT_NEEDED/no-dynstr message
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1322,7 +1325,7 @@ test "slice_decoders: premature DT_NULL causes DT_NEEDED to be ignored" {
     const desc = try decodeElfSlice(allocator, buf, null);
     defer if (desc.sections.len != 0) allocator.free(desc.sections);
     defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     defer if (desc.exports.len != 0) allocator.free(desc.exports);
     defer if (desc.messages.len != 0) allocator.free(desc.messages);
     defer if (desc.path.len != 0) allocator.free(desc.path);
@@ -1510,7 +1513,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
             } else {
                 if (cmd == macho.LC.LOAD_DYLIB or cmd == macho.LC.LOAD_WEAK_DYLIB or cmd == macho.LC.REEXPORT_DYLIB or cmd == macho.LC.LOAD_UPWARD_DYLIB) {
                     const name = lc.getDylibPathName();
-                    if (name.len != 0) try imports.append(allocator, name);
+                    if (name.len != 0) try imports.append(allocator, root.ImportEntry{ .dll = name, .symbols = &[_][]const u8{} });
                 } else if (cmd == macho.LC.RPATH) {
                     const rp = lc.getRpathPathName();
                     if (rp.len != 0) try messages.append(allocator, root.Message{ .body = rp });

@@ -576,6 +576,15 @@ fn write_u32_le(buf: []u8, off: usize, v: u32) void {
     }
 }
 
+fn write_u32_be(buf: []u8, off: usize, v: u32) void {
+    var tmp: u32 = v;
+    var j: usize = 0;
+    while (j < 4) : (j += 1) {
+        buf[off + (3 - j)] = @intCast(tmp & @as(u32, 0xFF));
+        tmp = tmp >> 8;
+    }
+}
+
 test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
     const allocator = std.testing.allocator;
     var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
@@ -758,6 +767,186 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
         }
     }
     try expect(saw_oob == true);
+}
+
+// Additional edge-case tests
+
+test "slice_decoders: missing .dynstr section yields DT_NEEDED/no-dynstr message" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 16777216);
+    defer allocator.free(buf);
+
+    const desc0 = try decodeElfSlice(allocator, buf, null);
+    defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
+    defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
+    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
+    defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
+    defer if (desc0.path.len != 0) allocator.free(desc0.path);
+
+    // Find .dynamic and DT_STRTAB and set its d_val to 0 (no vaddr)
+    var dyn_sec_index: ?usize = null;
+    var i: usize = 0;
+    while (i < desc0.sections.len) : (i += 1) {
+        if (std.mem.eql(u8, desc0.sections[i].name, ".dynamic")) {
+            dyn_sec_index = i;
+            break;
+        }
+    }
+    try expect(dyn_sec_index != null);
+    const dyn_off = @as(usize, desc0.sections[dyn_sec_index.?].file_offset);
+    const dyn_sz = @as(usize, desc0.sections[dyn_sec_index.?].size);
+
+    var off: usize = dyn_off;
+    const entry_size = @sizeOf(elf.Elf64_Dyn);
+    while (off + entry_size <= dyn_off + dyn_sz) : (off += entry_size) {
+        const tag = root.readU64At(buf, off, desc0.endianess);
+        if (tag == @as(u64, elf.DT_STRTAB)) {
+            write_u64_le(buf, off + 8, 0);
+            break;
+        }
+    }
+
+    // Zero shstrtab so .dynstr can't be found by name
+    var shstr_index: ?usize = null;
+    i = 0;
+    while (i < desc0.sections.len) : (i += 1) {
+        if (std.mem.eql(u8, desc0.sections[i].name, ".shstrtab")) {
+            shstr_index = i;
+            break;
+        }
+    }
+    try expect(shstr_index != null);
+    const shstr_off = @as(usize, desc0.sections[shstr_index.?].file_offset);
+    const shstr_sz = @as(usize, desc0.sections[shstr_index.?].size);
+    var j: usize = 0;
+    while (j < shstr_sz) : (j += 1) buf[shstr_off + j] = 0;
+
+    const desc = try decodeElfSlice(allocator, buf, null);
+    defer if (desc.sections.len != 0) allocator.free(desc.sections);
+    defer if (desc.segments.len != 0) allocator.free(desc.segments);
+    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.exports.len != 0) allocator.free(desc.exports);
+    defer if (desc.messages.len != 0) allocator.free(desc.messages);
+    defer if (desc.path.len != 0) allocator.free(desc.path);
+
+    var saw_msg: bool = false;
+    for (desc.messages) |m| {
+        if (std.mem.indexOf(u8, m.body, "DT_NEEDED entries present but no dynstr found") ) |pos| {
+            _ = pos;
+            saw_msg = true;
+        }
+    }
+    try expect(saw_msg == true);
+}
+
+test "slice_decoders: missing DT_NULL in dynamic table results in error" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 16777216);
+    defer allocator.free(buf);
+
+    const desc0 = try decodeElfSlice(allocator, buf, null);
+    defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
+    defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
+    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
+    defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
+    defer if (desc0.path.len != 0) allocator.free(desc0.path);
+
+    // Find .dynamic and change any DT_NULL tag to DT_NEEDED (removes terminator)
+    var dyn_sec_index: ?usize = null;
+    var i: usize = 0;
+    while (i < desc0.sections.len) : (i += 1) {
+        if (std.mem.eql(u8, desc0.sections[i].name, ".dynamic")) {
+            dyn_sec_index = i;
+            break;
+        }
+    }
+    try expect(dyn_sec_index != null);
+    const dyn_off = @as(usize, desc0.sections[dyn_sec_index.?].file_offset);
+    const dyn_sz = @as(usize, desc0.sections[dyn_sec_index.?].size);
+
+    var off: usize = dyn_off;
+    const entry_size2 = @sizeOf(elf.Elf64_Dyn);
+    var changed: bool = false;
+    while (off + entry_size2 <= dyn_off + dyn_sz) : (off += entry_size2) {
+        const tag = root.readU64At(buf, off, desc0.endianess);
+        if (tag == @as(u64, elf.DT_NULL)) {
+            // set this tag to DT_NEEDED so there may be no terminator
+            write_u64_le(buf, off, @as(u64, elf.DT_NEEDED));
+            // set some d_val to a small offset (0) to keep val in-range
+            write_u64_le(buf, off + 8, 0);
+            changed = true;
+            break;
+        }
+    }
+    try expect(changed == true);
+
+    // Now decoding should error (reader will hit EOF). We expect some error; treat any error as pass.
+    _ = decodeElfSlice(allocator, buf, null) catch |err| {
+        return; // expected error
+    };
+    // If we get here, decode unexpectedly succeeded
+    try expect(false);
+}
+
+test "slice_decoders: premature DT_NULL causes DT_NEEDED to be ignored" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/elf-Linux-x64-bash", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 16777216);
+    defer allocator.free(buf);
+
+    const desc0 = try decodeElfSlice(allocator, buf, null);
+    defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
+    defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
+    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
+    defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
+    defer if (desc0.path.len != 0) allocator.free(desc0.path);
+
+    // Count baseline imports
+    const baseline_imports = desc0.imports.len;
+
+    // Find .dynamic and set the first DT_NEEDED tag to DT_NULL (premature terminator)
+    var dyn_sec_index: ?usize = null;
+    var i: usize = 0;
+    while (i < desc0.sections.len) : (i += 1) {
+        if (std.mem.eql(u8, desc0.sections[i].name, ".dynamic")) {
+            dyn_sec_index = i;
+            break;
+        }
+    }
+    try expect(dyn_sec_index != null);
+    const dyn_off = @as(usize, desc0.sections[dyn_sec_index.?].file_offset);
+    const dyn_sz = @as(usize, desc0.sections[dyn_sec_index.?].size);
+
+    var off: usize = dyn_off;
+    const entry_size3 = @sizeOf(elf.Elf64_Dyn);
+    var changed2: bool = false;
+    while (off + entry_size3 <= dyn_off + dyn_sz) : (off += entry_size3) {
+        const tag = root.readU64At(buf, off, desc0.endianess);
+        if (tag == @as(u64, elf.DT_NEEDED)) {
+            write_u64_le(buf, off, @as(u64, elf.DT_NULL));
+            changed2 = true;
+            break;
+        }
+    }
+    try expect(changed2 == true);
+
+    const desc = try decodeElfSlice(allocator, buf, null);
+    defer if (desc.sections.len != 0) allocator.free(desc.sections);
+    defer if (desc.segments.len != 0) allocator.free(desc.segments);
+    defer if (desc.imports.len != 0) allocator.free(desc.imports);
+    defer if (desc.exports.len != 0) allocator.free(desc.exports);
+    defer if (desc.messages.len != 0) allocator.free(desc.messages);
+    defer if (desc.path.len != 0) allocator.free(desc.path);
+
+    try expect(desc.imports.len < baseline_imports);
 }
 
 pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]const u8) !root.BinaryDescription {

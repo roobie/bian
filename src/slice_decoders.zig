@@ -905,7 +905,7 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
     const desc0 = try decodeElfSlice(allocator, buf, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);
@@ -984,7 +984,7 @@ test "slice_decoders: DT_BIND_NOW triggers RELRO full" {
     const desc0 = try decodeElfSlice(allocator, buf, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);
@@ -1035,7 +1035,7 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
     const desc0 = try decodeElfSlice(allocator, buf, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);
@@ -1159,7 +1159,7 @@ test "slice_decoders: missing .dynstr section yields DT_NEEDED/no-dynstr message
     const desc0 = try decodeElfSlice(allocator, buf, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);
@@ -1230,7 +1230,7 @@ test "slice_decoders: missing DT_NULL in dynamic table results in error" {
     const desc0 = try decodeElfSlice(allocator, buf, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);
@@ -1271,7 +1271,7 @@ test "slice_decoders: missing DT_NULL in dynamic table results in error" {
     };
     defer if (maybe_desc.sections.len != 0) allocator.free(maybe_desc.sections);
     defer if (maybe_desc.segments.len != 0) allocator.free(maybe_desc.segments);
-    defer if (maybe_desc.imports.len != 0) allocator.free(maybe_desc.imports);
+    defer if (maybe_desc.imports.len != 0) common.freeImportEntries(allocator, maybe_desc.imports);
     defer if (maybe_desc.exports.len != 0) allocator.free(maybe_desc.exports);
     defer if (maybe_desc.messages.len != 0) allocator.free(maybe_desc.messages);
     defer if (maybe_desc.path.len != 0) allocator.free(maybe_desc.path);
@@ -1288,7 +1288,7 @@ test "slice_decoders: premature DT_NULL causes DT_NEEDED to be ignored" {
     const desc0 = try decodeElfSlice(allocator, buf, null);
     defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
     defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) allocator.free(desc0.imports);
+    defer if (desc0.imports.len != 0) common.freeImportEntries(allocator, desc0.imports);
     defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
     defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
     defer if (desc0.path.len != 0) allocator.free(desc0.path);

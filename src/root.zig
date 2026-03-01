@@ -28,6 +28,7 @@ pub const readU64At = common.readU64At;
 pub const readI32At = common.readI32At;
 pub const SegmentMap = common.SegmentMap;
 pub const ImportEntry = common.ImportEntry;
+pub const freeImportEntries = common.freeImportEntries;
 pub const zslice = common.zslice;
 pub const vaddrToFileOffset = common.vaddrToFileOffset;
 pub const safeSlice = common.safeSlice;

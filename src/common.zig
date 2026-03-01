@@ -89,6 +89,11 @@ pub const Message = struct {
     body: []const u8,
 };
 
+pub const ImportEntry = struct {
+    dll: []const u8,
+    symbols: [][]const u8,
+};
+
 pub fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.ArrayList(Section), segmaps: *std.ArrayList(SegmentMap), fileoff: u64, filesize: u64, vmaddr: u64, perm: Permission) !void {
     try segments_list.append(allocator, Section{ .name = "", .kind = SectionKind.unknown, .size = filesize, .file_offset = fileoff, .permission = perm, .flags = 0, .reserved1 = 0, .reserved2 = 0 });
     try segmaps.append(allocator, SegmentMap{ .fileoff = fileoff, .filesize = filesize, .vmaddr = vmaddr });
@@ -306,7 +311,7 @@ pub const BinaryDescription = struct {
     // === STRUCTURAL ===
     sections: []Section,
     segments: []Section,
-    imports: [][]const u8,
+    imports: []ImportEntry,
     exports: []Export,
 
     messages: []Message,
@@ -423,7 +428,10 @@ pub const BinaryDescription = struct {
         try w.print("imports: {d}\n", .{self.imports.len});
         if (opts.print_symbols) {
             for (self.imports) |imp| {
-                try w.print("  - {s}\n", .{imp});
+                if (imp.dll.len != 0) try w.print("  - DLL: {s}\n", .{imp.dll});
+                for (imp.symbols) |sym| {
+                    try w.print("    - {s}\n", .{sym});
+                }
             }
         }
 
@@ -611,16 +619,29 @@ pub fn jsonStringify(self: *@This(), jw: anytype) !void {
     }
     try jw.endArray();
 
-    // imports (include full symbol list)
+    // imports (structured: per-dll entries)
     try jw.objectField("imports");
     try jw.beginObject();
     try jw.objectField("count");
     try jw.write(@as(u32, self.imports.len));
-    try jw.objectField("symbols");
+    try jw.objectField("entries");
     try jw.beginArray();
     idx = 0;
     while (idx < self.imports.len) : (idx += 1) {
-        try jw.write(self.imports[idx]);
+        const ie = self.imports[idx];
+        try jw.beginObject();
+        try jw.objectField("dll");
+        if (ie.dll.len == 0) try jw.write(null) else try jw.write(ie.dll);
+        try jw.objectField("count");
+        try jw.write(@as(u32, ie.symbols.len));
+        try jw.objectField("symbols");
+        try jw.beginArray();
+        var sidx: usize = 0;
+        while (sidx < ie.symbols.len) : (sidx += 1) {
+            try jw.write(ie.symbols[sidx]);
+        }
+        try jw.endArray();
+        try jw.endObject();
     }
     try jw.endArray();
     try jw.endObject();
@@ -672,7 +693,13 @@ pub const BinaryBundle = struct {
             // Free top-level slices allocated with toOwnedSlice()
             if (d.sections.len != 0) allocator.free(d.sections);
             if (d.segments.len != 0) allocator.free(d.segments);
-            if (d.imports.len != 0) allocator.free(d.imports);
+            if (d.imports.len != 0) {
+                // Free nested symbol arrays inside each ImportEntry
+                for (d.imports) |ie| {
+                    if (ie.symbols.len != 0) allocator.free(ie.symbols);
+                }
+                allocator.free(d.imports);
+            }
             if (d.exports.len != 0) allocator.free(d.exports);
             if (d.messages.len != 0) allocator.free(d.messages);
             // Free per-description path if present

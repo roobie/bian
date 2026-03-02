@@ -39,8 +39,6 @@ pub const Permission = common.Permission;
 pub const Section = common.Section;
 pub const appendSegmentAndMap = common.appendSegmentAndMap;
 pub const appendSectionFromBlock = common.appendSectionFromBlock;
-pub const ImportSymbol = common.ImportSymbol;
-pub const ImportSymbolKind = common.ImportSymbolKind;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you

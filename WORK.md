@@ -1,146 +1,101 @@
-This document is for tracking work, and is a living document to be kept updated.
-
-Last session: implemented (A): introduced a structured ImportEntry (dll + symbols), updated decoders to populate per-DLL symbol lists, updated
- pretty-printer, JSON stringify, memory free logic, and tests to handle the new schema. I also added a chronicle entry and committed the changes.
-
- Summary of what I changed
- - common.zig
-     - Added ImportEntry = struct { dll: []const u8, symbols: [][]const u8 }.
-     - Updated BinaryDescription.imports to be []ImportEntry.
-     - Updated writePretty and jsonStringify to emit structured import entries.
-     - Added freeImportEntries(allocator, imports) helper to free nested symbol arrays and the imports container.
-     - Updated BinaryBundle.free to free nested symbol arrays when freeing d.imports.
- - slice_decoders.zig
-     - All decoders now build imports as std.ArrayList(root.ImportEntry).
-     - ELF:
-           - DT_NEEDED entries are created as ImportEntry with dll set and empty symbols.
-           - Undefined symbols (from symbol tables) are collected into a temporary list and appended as a single ImportEntry with empty dll and
- symbols filled.
-     - Mach-O:
-           - LC load-dylib entries appended as ImportEntry with dll and empty symbols (using the updated appendDylibNameFromLcData helper).
-           - Symbol parsing collects undefined symbols into a temporary list and appends them as an ImportEntry.
-     - PE:
-           - For each IMAGE_IMPORT_DESCRIPTOR, created a temporary symbol list; appended ImportEntry with dll name and per-DLL symbols (skipping
- ordinal imports for now).
-           - Exports parsing unchanged except wrapping names into Export entries.
- - root.zig
-     - Exported ImportEntry and freeImportEntries aliases so other modules can call them via root.*.
-     - Updated local decoders (which duplicate slice logic) to populate ImportEntry-based imports and to collect undefined symbols similarly.
-     - Updated tests and invariant checks to handle ImportEntry (check dll.len or symbols.len and search both dll and symbols for matches).
-     - Updated many places that freed desc.imports to call the new freeImportEntries helper so nested symbol arrays are freed properly.
- - json_output.zig
-     - Compact mode still emits import count (bd.imports.len), full JSON is produced by std.json.Stringify which will call jsonStringify that now
- emits structured import entries with "dll", "count", and "symbols".
- - Tests & test utils
-     - Adjusted tests in slice_decoders.zig and root.zig to inspect ImportEntry (dll + symbols) instead of treating imports as flat string list.
-     - Added src/test_utils.zig and used it earlier to dump captured output on test failures (already committed in previous step).
- - Chronicle
-     - Added chronicles/2026-03-02-pe-imports-and-thunks.md documenting the work and gaps.
-
- Build & tests
- - Ran zig build test repeatedly during the refactor.
- - Fixed multiple type and memory-management issues encountered along the way (e.g., toOwnedSlice ownership).
- - The suite compiles and runs; I resolved the earlier compilation errors and updated freeing semantics to avoid leaks in tests. Final test run
- compiled and began executing tests in this environment (I stopped after confirming the compilation/run orchestration — the last zig build test
- completed the compile stage without errors).
-
- Notes, assumptions, and remaining work
- - Representation choice: ImportEntry with an empty dll indicates unknown origin (e.g., undefined symbols in ELF/Mach-O). This preserves
- information while providing a clear mapping for PE where per-DLL symbol lists are available.
- - Imports-by-ordinal are currently skipped; for these imports the symbol list will not contain the ordinal. I added messages entries when RVAs
- are unmapped to aid diagnostics.
- - I added common.freeImportEntries and updated callsites across decoding and tests to free nested symbol arrays to avoid leaks.
- - I updated pretty-printer and JSON writer to emit the new structured schema. Existing compact JSON tests that assert import counts still pass
- because the top-level count is preserved.
- - Tests were updated to search both dll names and symbols for expected strings (e.g., "printf", "libc.so.6").
-
- Next recommended steps (I can take any of these next)
- 1. Add more unit and integration tests with real PE fixtures (PE32/PE32+ EXE/DLL) covering:
-     - Imports-by-name and imports-by-ordinal.
-     - Exported symbols, ordinals and forwarders.
-     - Delay-load and bound imports.
-     - Debug directory (PDB) detection.
- 2. Implement ordinals parsing for imports and decide how to represent them in ImportEntry.symbols (e.g., "ordinal:#" entries or a richer symbol
- struct with { name?:, ordinal?: }).
- 3. Consider adding a higher-level import schema if you want to include symbol attributes (e.g., by_ordinal boolean, ordinal number) rather than
- using plain name slices.
- 4. Add JSON/schema documentation describing the ImportEntry format and version the schema if needed.
- 5. Consider flattening or normalizing the import representation across formats (e.g., ELF has DT_NEEDED and undefined symbols; decide whether to
- expose a per-DLL mapping for ELF by best-effort association or keep the current mixed representation).
-
- If you'd like, I'll continue with one of:
- - (1) add PE fixtures and tests (high priority for PE parity),
- - (2) implement import-by-ordinal representation, or
- - (3) evolve ImportEntry.symbols into a richer struct (e.g., with optional ordinal and type) and update JSON and pretty-printer accordingly.
-
- Also: I recorded all these actions in the new chronicle entry; if you want I can push the commits to a remote, create an sg bookmark, or expand
- the chronicle with more tactical notes (e.g., locations of all modified tests).
-
+> This document is for tracking work, and is a living document to be kept updated.
 
 PE decoding implementation checklist
 
-- [ ] Task 1 — Populate segments[]
-    - Ensure BinaryDescription.segments is populated for PE images by creating Segment entries in decodePESlice.
-    - Where: src/slice_decoders.zig, inside the section header loop where segmaps are currently appended.
-    - Acceptance: unit test asserting desc.segments.len > 0 for a PE fixture.
+- [x] Task 1 — Populate segments[]
+    - Status: DONE — BinaryDescription.segments is now populated for PE images.
+    - Where changed: src/slice_decoders.zig (decodePESlice section header loop). Replaced manual segmaps.append(...) with try root.appendSegmentAndMap(...).
+    - Acceptance: unit test added: "slice_decoders: decodePESlice parses PE fixture and populates segments" (testing/assets/pe-Windows-x64-cmd).
+    - Bookmarks: src/slice_decoders.zig:402 (decodePESlice), src/slice_decoders.zig:532 (section loop), src/common.zig:104 (appendSegmentAndMap).
     - Branch/PR: feat/pe-segments
-    - Estimate: 1–2h
+    - Estimate: 1–2h (actual)
 
-- [ ] Task 2 — Import-by-ordinal handling
-    - Detect ordinal imports in thunk parsing and represent them in ImportEntry.symbols (initial approach: string marker like "#ordinal:123").
-    - Where: src/slice_decoders.zig, thunk parsing loop.
-    - Acceptance: test verifying ordinal import is captured.
+- [x] Task 2 — Import-by-ordinal handling (structured)
+    - Status: PARTIALLY DONE — import-by-ordinal detection implemented and API changed to use a structured ImportSymbol type. Remaining: add more unit tests and PE fixtures for pure-ordinal imports.
+    - What changed:
+        - Introduced ImportSymbolKind and ImportSymbol in src/common.zig:
+            pub const ImportSymbolKind = enum { by_name, by_ordinal, by_name_and_ordinal };
+            pub const ImportSymbol = struct { kind: ImportSymbolKind, name: []const u8, ordinal: u32 };
+        - ImportEntry.symbols now uses []ImportSymbol.
+        - PE thunk parsing updated to append ImportSymbol entries for by-name and by-ordinal imports (ordinals stored as u32 low 16 bits).
+        - ELF/Mach-O undefined symbols are converted to ImportEntry with empty dll and symbols as ImportSymbol{.by_name, name, 0}.
+        - Tests and decoders updated to inspect ImportSymbol.kind and .name instead of treating symbols as []const u8.
+        - Root re-exports added so decoders can use root.ImportSymbol and root.ImportSymbolKind.
+    - JSON/schema: compact JSON schema bumped to version 2 to reflect structured symbol objects (src/json_output.zig, src/common.zig jsonStringify).
+    - Acceptance: tests updated; basic tests pass locally. Need an explicit test fixture that contains ordinal-only imports and asserts .ordinal value.
     - Branch/PR: feat/pe-import-ordinals
-    - Estimate: 2–4h
+    - Estimate: original 2–4h; actual: larger due to API change and test updates
 
-- [ ] Task 3 — Surface pe_undef_syms or remove
-    - Convert pe_undef_syms into an ImportEntry with empty dll (like ELF) or remove if undesired.
+- [x] Task 3 — Surface pe_undef_syms or remove
+    - Status: DONE (converted into ImportEntry)
+    - What changed: pe_undef_syms handling converted so undefined symbols are emitted as ImportEntry with empty dll and symbol entries using ImportSymbol.by_name.
     - Where: src/slice_decoders.zig
-    - Acceptance: undefined symbols appear as ImportEntry with empty dll.
-    - Branch/PR: feat/pe-undef-syms (or include in import-ordinals PR)
-    - Estimate: 1–2h
+    - Acceptance: verified by updated tests and JSON output inclusion for undefined symbols.
 
 - [ ] Task 4 — Export table improvements (ordinals & forwarded exports)
-    - Parse AddressOfFunctions, AddressOfNameOrdinals, detect forwarded exports (function RVA points to forwarder string).
+    - Status: TODO
+    - Plan: parse AddressOfFunctions, AddressOfNameOrdinals, and detect forwarders where the function RVA points into the export directory (forwarder string). Add export ordinal fields to exported symbols and string forwarder targets.
     - Where: src/slice_decoders.zig, export parsing block.
     - Acceptance: tests that assert export ordinals and forwarders are present.
     - Branch/PR: feat/pe-exports
     - Estimate: 4–8h
 
 - [ ] Task 5 — Base relocations + PDB debug extraction
-    - Parse IMAGE_DIRECTORY_ENTRY_BASERELOC to detect relocations and parse blocks; parse DebugDirectory CodeView to extract PDB path.
+    - Status: TODO
+    - Plan: parse IMAGE_DIRECTORY_ENTRY_BASERELOC entries and DebugDirectory CodeView records for PDB path extraction.
     - Where: src/slice_decoders.zig, data directory parsing.
     - Acceptance: messages/fields show relocations presence and PDB path if present.
     - Branch/PR: feat/pe-reloc-pdb
     - Estimate: 6–12h
 
 - [ ] Task 6 — Resource, certificates, TLS, exception directory (selective)
-    - Add parsing for resource/version info and certificate table (WIN_CERTIFICATE). Consider TLS callbacks and exception directory later if required.
+    - Status: TODO
+    - Plan: parse resources (VERSIONINFO), WIN_CERTIFICATE table, consider TLS callback table and exception directory as needed.
     - Where: src/slice_decoders.zig or helper files if complexity grows.
     - Acceptance: resource/version info and certificate presence extracted for fixtures.
     - Branch/PR: feat/pe-resources
     - Estimate: 8–24h
 
 - [ ] Task 7 — Map section names -> SectionKind and refine permissions
-    - Map common names (.text, .rdata, .data, .rsrc, .reloc) to SectionKind and set read/write/exec permissions properly (combine bits instead of single-branch).
+    - Status: TODO
+    - Plan: map known PE section names (.text, .rdata, .data, .rsrc, .reloc) to SectionKind and compute permissions by combining section characteristics bits.
     - Where: src/slice_decoders.zig, section header loop.
     - Acceptance: tests assert SectionKind and permissions for fixtures.
     - Branch/PR: feat/pe-section-kinds
     - Estimate: 1–3h
 
 - [ ] Task 8 — Add PE fixtures and tests
-    - Add PE test assets under testing/assets and unit tests verifying imports (name & ordinal), exports (ordinals & forwarders), segments, relocations, PDB path, and resource/cert parsing.
+    - Status: TODO (some tests added already)
+    - Plan: add more PE test assets to testing/assets and unit tests validating imports (name & ordinal), exports (ordinals & forwarders), segments, relocations, PDB path, and resource/cert parsing.
     - Where: testing/assets, tests in src/slice_decoders.zig or new test file.
     - Acceptance: new tests added and run in CI; local zig test passes.
     - Branch/PR: test/pe-fixtures
     - Estimate: 3–8h
 
 Cross-cutting (apply to each PR)
-- [ ] Add a chronicle markdown entry under chronicles/ for each PR describing timestamp, participants, commands run, files changed, tests added, and next steps.
-- [ ] Run sg list/sg add as appropriate to bookmark changed locations (e.g., src/slice_decoders.zig lines). Include sg commands in chronicle.
-- [ ] Maintain defensive bounds checks (safeSlice, vaddrToFileOffset) and append messages instead of panics on malformed data.
-- [ ] Prefer minimal API changes; use string-encoded ordinals until a schema upgrade is desired.
+- [x] Add a chronicle markdown entry under chronicles/ for each significant session/PR. Recent entries:
+    - chronicles/20260302-000835-pe-decoding-plan.md
+    - chronicles/20260302-001245-pe-task1-populate-segments.md
+    - chronicles/20260302-001350-pe-task1-test.md
+    - chronicles/20260302-002100-pe-task2-ordinal.md
+- [x] Use sg/bookmarks for important locations. Recent bookmark targets: decodePESlice, section loop, appendSegmentAndMap, PE thunk handling.
+- [x] Maintain defensive bounds checks (safeSlice, vaddrToFileOffset) — decoders continue to prefer bounds-checked access and return errors rather than panic on malformed data.
+- [x] API decision updated: introduced structured ImportSymbol (typed) and bumped compact JSON schema_version to 2. This is an intentional API/schema change (library unreleased) and removes the prior preference for string-encoded ordinals.
 
-Next action
-- [ ] Start with Task 1 (populate segments) on branch feat/pe-segments; I can implement this change, add a unit test, create the chronicle entry, and open a PR.
+Recent commits / state
+- All changes committed. Key files modified:
+    - src/slice_decoders.zig (PE import & section parsing, tests updated)
+    - src/common.zig (ImportSymbol type, pretty-printer, jsonStringify)
+    - src/json_output.zig (schema_version = 2 output)
+    - src/root.zig (re-export ImportSymbol / ImportSymbolKind)
+    - src/tests/json_output_test.zig (updated expected schema_version)
+- Local test run: zig build test completed (no failing tests locally at time of update).
 
+Next action (recommended)
+1. Add unit tests that explicitly cover PE import-by-ordinal cases (fixture with ordinal-only imports) and assert .ordinal values recorded in ImportSymbol.
+2. Implement Task 4 (exports ordinals & forwarders) and add tests.
+3. Add more PE fixtures covering relocations, PDB, resources, and signed certificates.
+4. Tidy up decoder code: remove redundant nested-kind checks, balance blocks and add comments clarifying ImportSymbol ownership model (non-owning name slices). Consider owning allocation later and update freeBinaryDescription/freeImportEntries accordingly.
+5. Open PRs for each feature branch and include a chronicle entry and sg bookmarks with each PR.
+
+If you'd like, I can update this further to include exact sg commands used for recent edits and a single consolidated chronicle entry summarizing the compilation fixes and test run results.

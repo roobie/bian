@@ -752,8 +752,8 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
         for (ie.symbols) |sym| {
             if (sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) {
                 if (std.mem.indexOf(u8, sym.name, "printf")) |pos| {
-                _ = pos;
-                found_printf = true;
+                    _ = pos;
+                    found_printf = true;
                 }
             }
         }
@@ -966,8 +966,8 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
         for (ie.symbols) |sym| {
             if (sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) {
                 if (std.mem.indexOf(u8, sym.name, "printf")) |pos| {
-                _ = pos;
-                found_printf = true;
+                    _ = pos;
+                    found_printf = true;
                 }
             }
         }

@@ -393,6 +393,7 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
         .path = desc_path,
+        .debug_pdb_path = &[_]u8{},
         .debug_info_present = false,
     };
 
@@ -683,6 +684,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
             .exports = try exports.toOwnedSlice(allocator),
             .messages = try messages.toOwnedSlice(allocator),
             .path = desc_path,
+            .debug_pdb_path = &[_]u8{},
             .debug_info_present = debug_present,
         };
 
@@ -709,6 +711,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
         .path = desc_path,
+        .debug_pdb_path = &[_]u8{},
         .debug_info_present = false,
     };
 
@@ -1129,13 +1132,8 @@ test "slice_decoders: decodePESlice parses PE fixture and populates segments" {
     defer allocator.free(buf);
 
     const desc = try decodePESlice(allocator, buf, null);
-    // Free top-level slices allocated by decodePESlice
-    defer if (desc.sections.len != 0) allocator.free(desc.sections);
-    defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
-    defer if (desc.exports.len != 0) allocator.free(desc.exports);
-    defer if (desc.messages.len != 0) allocator.free(desc.messages);
-    defer if (desc.path.len != 0) allocator.free(desc.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
 
     try expect(desc.format == root.BinaryFileKind.pe);
     try expect(desc.segments.len > 0);
@@ -1772,6 +1770,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         .exports = try exports.toOwnedSlice(allocator),
         .messages = try messages.toOwnedSlice(allocator),
         .path = desc_path,
+        .debug_pdb_path = &[_]u8{},
         .debug_info_present = false,
     };
 

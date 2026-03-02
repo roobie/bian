@@ -96,9 +96,21 @@ pub const Message = struct {
     body: []const u8,
 };
 
+pub const ImportSymbolKind = enum {
+    by_name,
+    by_ordinal,
+    by_name_and_ordinal,
+};
+
+pub const ImportSymbol = struct {
+    kind: ImportSymbolKind,
+    name: []const u8,
+    ordinal: u32,
+};
+
 pub const ImportEntry = struct {
     dll: []const u8,
-    symbols: [][]const u8,
+    symbols: []ImportSymbol,
 };
 
 pub fn appendSegmentAndMap(allocator: std.mem.Allocator, segments_list: *std.ArrayList(Section), segmaps: *std.ArrayList(SegmentMap), fileoff: u64, filesize: u64, vmaddr: u64, perm: Permission) !void {
@@ -154,7 +166,7 @@ pub fn appendDylibNameFromLcData(allocator: std.mem.Allocator, imports_list: *st
     const name_off = @as(usize, readU32At(lc_data, 8, m_endian));
     if (name_off < lc_data.len) {
         const name = std.mem.sliceTo(lc_data[name_off..], 0);
-        if (name.len != 0) try imports_list.append(allocator, ImportEntry{ .dll = name, .symbols = &[_][]const u8{} });
+        if (name.len != 0) try imports_list.append(allocator, ImportEntry{ .dll = name, .symbols = &[_]ImportSymbol{} });
     }
 }
 
@@ -437,7 +449,11 @@ pub const BinaryDescription = struct {
             for (self.imports) |imp| {
                 if (imp.dll.len != 0) try w.print("  - DLL: {s}\n", .{imp.dll});
                 for (imp.symbols) |sym| {
-                    try w.print("    - {s}\n", .{sym});
+                    switch (sym.kind) {
+                        .by_name => try w.print("    - {s}\n", .{sym.name}),
+                        .by_ordinal => try w.print("    - ordinal:{d}\n", .{sym.ordinal}),
+                        .by_name_and_ordinal => try w.print("    - {s} (ordinal:{d})\n", .{ sym.name, sym.ordinal }),
+                    }
                 }
             }
         }
@@ -477,7 +493,7 @@ pub fn jsonStringify(self: *@This(), jw: anytype) !void {
     try jw.beginObject();
 
     try jw.objectField("schema_version");
-    try jw.write(1);
+    try jw.write(2);
 
     try jw.objectField("file");
     if (self.path.len == 0) {
@@ -645,7 +661,21 @@ pub fn jsonStringify(self: *@This(), jw: anytype) !void {
         try jw.beginArray();
         var sidx: usize = 0;
         while (sidx < ie.symbols.len) : (sidx += 1) {
-            try jw.write(ie.symbols[sidx]);
+            const sym = ie.symbols[sidx];
+            try jw.beginObject();
+            try jw.objectField("name");
+            if (sym.kind == ImportSymbolKind.by_name or sym.kind == ImportSymbolKind.by_name_and_ordinal) {
+                if (sym.name.len == 0) try jw.write(null) else try jw.write(sym.name);
+            } else {
+                try jw.write(null);
+            }
+            try jw.objectField("ordinal");
+            if (sym.kind == ImportSymbolKind.by_ordinal or sym.kind == ImportSymbolKind.by_name_and_ordinal) {
+                try jw.write(sym.ordinal);
+            } else {
+                try jw.write(null);
+            }
+            try jw.endObject();
         }
         try jw.endArray();
         try jw.endObject();

@@ -19,7 +19,7 @@ test "json_output: ELF asset produces compact JSON with expected keys" {
     try expect(out.len > 0);
     try expect(out[0] == '{');
     const out_str = std.mem.trimRight(u8, out, &[_]u8{ '\n', ' ', '\r', '\t' });
-    const got = std.mem.indexOfSlice(u8, out_str, "\"schema_version\":1") orelse unreachable;
+    const got = std.mem.indexOfSlice(u8, out_str, "\"schema_version\":2") orelse unreachable;
     _ = got;
     const got2 = std.mem.indexOfSlice(u8, out_str, "\"format\":\"elf\"") orelse unreachable;
     _ = got2;

@@ -28,6 +28,8 @@ pub const readU64At = common.readU64At;
 pub const readI32At = common.readI32At;
 pub const SegmentMap = common.SegmentMap;
 pub const ImportEntry = common.ImportEntry;
+pub const ImportSymbol = common.ImportSymbol;
+pub const ImportSymbolKind = common.ImportSymbolKind;
 pub const freeImportEntries = common.freeImportEntries;
 pub const zslice = common.zslice;
 pub const vaddrToFileOffset = common.vaddrToFileOffset;
@@ -37,6 +39,8 @@ pub const Permission = common.Permission;
 pub const Section = common.Section;
 pub const appendSegmentAndMap = common.appendSegmentAndMap;
 pub const appendSectionFromBlock = common.appendSectionFromBlock;
+pub const ImportSymbol = common.ImportSymbol;
+pub const ImportSymbolKind = common.ImportSymbolKind;
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you

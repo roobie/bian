@@ -88,7 +88,7 @@ pub fn writeBinaryDescriptionJson(w: *std.io.Writer, bd: *const common.BinaryDes
     try s.beginObject();
 
     try s.objectField("schema_version");
-    try s.write(1);
+    try s.write(2);
 
     try s.objectField("file");
     if (bd.path.len == 0) try s.write(null) else try s.write(bd.path);

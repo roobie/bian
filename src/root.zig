@@ -603,6 +603,7 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
         .messages = try messages.toOwnedSlice(allocator),
         .path = desc_path,
         .debug_info_present = false,
+        .debug_pdb_path = &[_]u8{},
     };
 
     // Construct a bundle that owns the single description and the backing buffer
@@ -632,6 +633,10 @@ pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescripti
     if (desc.imports.len != 0) common.freeImportEntries(allocator, desc.imports);
     if (desc.exports.len != 0) allocator.free(desc.exports);
     if (desc.messages.len != 0) allocator.free(desc.messages);
+    // Free path if allocated
+    if (desc.path.len != 0) allocator.free(desc.path);
+    // Free PDB path if allocated
+    if (desc.debug_pdb_path.len != 0) allocator.free(desc.debug_pdb_path);
 }
 
 /// Decodes a PE file into a BinaryBundle (single-slice). Uses slice_dec.decodePESlice

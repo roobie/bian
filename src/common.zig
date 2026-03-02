@@ -340,6 +340,9 @@ pub const BinaryDescription = struct {
     path: []const u8,
 
     debug_info_present: bool,
+    // For PE/PDB and other debug containers we may include a minimal path
+    // extracted from the binary's debug directory (e.g. CodeView RSDS -> PDB path).
+    debug_pdb_path: []const u8,
 
     pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void {
         // If path supplied, print it first
@@ -476,6 +479,9 @@ pub const BinaryDescription = struct {
         }
 
         try w.print("debug_info_present: {s}\n", .{if (self.debug_info_present) "yes" else "no"});
+        if (self.debug_pdb_path.len != 0) {
+            try w.print("debug_pdb_path: {s}\n", .{self.debug_pdb_path});
+        }
     }
 };
 
@@ -709,6 +715,9 @@ pub fn jsonStringify(self: *@This(), jw: anytype) !void {
     try jw.objectField("debug_info_present");
     try jw.write(self.debug_info_present);
 
+    try jw.objectField("debug_pdb_path");
+    if (self.debug_pdb_path.len == 0) try jw.write(null) else try jw.write(self.debug_pdb_path);
+
     try jw.objectField("metadata");
     try jw.beginObject();
     try jw.objectField("duration_ms");
@@ -741,6 +750,8 @@ pub const BinaryBundle = struct {
             if (d.messages.len != 0) allocator.free(d.messages);
             // Free per-description path if present
             if (d.path.len != 0) allocator.free(d.path);
+            // Free per-description PDB path if present (allocated by decodePESlice)
+            if (d.debug_pdb_path.len != 0) allocator.free(d.debug_pdb_path);
         }
         // Free the items slice itself
         if (self.items.len != 0) allocator.free(self.items);

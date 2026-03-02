@@ -730,13 +730,8 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
     defer allocator.free(buf);
 
     const desc = try decodeElfSlice(allocator, buf, null);
-    // Free owned top-level slices from BinaryDescription after assertions
-    defer if (desc.sections.len != 0) allocator.free(desc.sections);
-    defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
-    defer if (desc.exports.len != 0) allocator.free(desc.exports);
-    defer if (desc.messages.len != 0) allocator.free(desc.messages);
-    defer if (desc.path.len != 0) allocator.free(desc.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
 
     try expect(desc.format == root.BinaryFileKind.elf);
     try expect(desc.arch == root.CpuArch.x86_64);
@@ -794,13 +789,8 @@ test "slice_decoders: decodeMachoSlice parses Mach-O header from fixture" {
     defer allocator.free(buf);
 
     const desc = try decodeMachoSlice(allocator, buf, null);
-    // Free top-level slices allocated by decodeMachoSlice
-    defer if (desc.sections.len != 0) allocator.free(desc.sections);
-    defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
-    defer if (desc.exports.len != 0) allocator.free(desc.exports);
-    defer if (desc.messages.len != 0) allocator.free(desc.messages);
-    defer if (desc.path.len != 0) allocator.free(desc.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
 
     try expect(desc.format == root.BinaryFileKind.macho);
     try expect(desc.arch == root.CpuArch.x86_64);
@@ -815,13 +805,8 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
     defer allocator.free(buf);
 
     const desc = try decodeMachoSlice(allocator, buf, null);
-    // Free top-level slices allocated by decodeMachoSlice
-    defer if (desc.sections.len != 0) allocator.free(desc.sections);
-    defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
-    defer if (desc.exports.len != 0) allocator.free(desc.exports);
-    defer if (desc.messages.len != 0) allocator.free(desc.messages);
-    defer if (desc.path.len != 0) allocator.free(desc.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
 
     try expect(desc.format == root.BinaryFileKind.macho);
     try expect(desc.sections.len > 0);
@@ -916,12 +901,8 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
 
     // First decode to locate dynamic section and confirm baseline
     const desc0 = try decodeElfSlice(allocator, buf, null);
-    defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
-    defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) root.freeImportEntries(allocator, desc0.imports);
-    defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
-    defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
-    defer if (desc0.path.len != 0) allocator.free(desc0.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc0);
 
     var dyn_sec_index: ?usize = null;
     var i: usize = 0;
@@ -997,12 +978,8 @@ test "slice_decoders: DT_BIND_NOW triggers RELRO full" {
     defer allocator.free(buf);
 
     const desc0 = try decodeElfSlice(allocator, buf, null);
-    defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
-    defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) root.freeImportEntries(allocator, desc0.imports);
-    defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
-    defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
-    defer if (desc0.path.len != 0) allocator.free(desc0.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc0);
 
     // Find dynamic table
     var dyn_sec_index: ?usize = null;
@@ -1030,12 +1007,8 @@ test "slice_decoders: DT_BIND_NOW triggers RELRO full" {
     }
 
     const desc = try decodeElfSlice(allocator, buf, null);
-    defer if (desc.sections.len != 0) allocator.free(desc.sections);
-    defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
-    defer if (desc.exports.len != 0) allocator.free(desc.exports);
-    defer if (desc.messages.len != 0) allocator.free(desc.messages);
-    defer if (desc.path.len != 0) allocator.free(desc.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
 
     try expect(desc.relro == root.RelroConfig.full);
 }
@@ -1048,12 +1021,8 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
     defer allocator.free(buf);
 
     const desc0 = try decodeElfSlice(allocator, buf, null);
-    defer if (desc0.sections.len != 0) allocator.free(desc0.sections);
-    defer if (desc0.segments.len != 0) allocator.free(desc0.segments);
-    defer if (desc0.imports.len != 0) root.freeImportEntries(allocator, desc0.imports);
-    defer if (desc0.exports.len != 0) allocator.free(desc0.exports);
-    defer if (desc0.messages.len != 0) allocator.free(desc0.messages);
-    defer if (desc0.path.len != 0) allocator.free(desc0.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc0);
 
     // Locate DT_STRSZ entry and set it to an enormous size to force out-of-bounds
     var dyn_sec_index: ?usize = null;
@@ -1080,12 +1049,8 @@ test "slice_decoders: malformed DT_STRSZ appends message instead of panicking" {
     }
 
     const desc = try decodeElfSlice(allocator, buf, null);
-    defer if (desc.sections.len != 0) allocator.free(desc.sections);
-    defer if (desc.segments.len != 0) allocator.free(desc.segments);
-    defer if (desc.imports.len != 0) root.freeImportEntries(allocator, desc.imports);
-    defer if (desc.exports.len != 0) allocator.free(desc.exports);
-    defer if (desc.messages.len != 0) allocator.free(desc.messages);
-    defer if (desc.path.len != 0) allocator.free(desc.path);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
 
     var saw_oob: bool = false;
     for (desc.messages) |m| {

@@ -602,7 +602,8 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
                                             if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
                                                 // import by ordinal: record ordinal value and diagnostic message
-                                                const ord = @intCast(u32)(t & 0xFFFF);
+                                                const masked: u64 = t & 0xFFFF;
+                                                const ord = @as(u32, masked);
                                                 try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_ordinal, .name = &[_]u8{}, .ordinal = ord });
                                                 try messages.append(allocator, root.Message{ .body = "import by ordinal (32-bit)" });
                                             } else {
@@ -624,7 +625,8 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
                                             if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
                                                 // import by ordinal: record ordinal value and diagnostic message
-                                                const ord64 = @intCast(u32)(t64 & 0xFFFF);
+                                                const masked64: u64 = t64 & 0xFFFF;
+                                                const ord64 = @as(u32, masked64);
                                                 try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_ordinal, .name = &[_]u8{}, .ordinal = ord64 });
                                                 try messages.append(allocator, root.Message{ .body = "import by ordinal (64-bit)" });
                                             } else {

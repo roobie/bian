@@ -602,7 +602,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             const IMAGE_ORDINAL_FLAG32: u32 = 0x80000000;
                                             if ((t & IMAGE_ORDINAL_FLAG32) != 0) {
                                                 // import by ordinal: record ordinal value and diagnostic message
-                                                const ord = @intCast(u32, t & 0xFFFF);
+                                                const ord = @intCast(u32)(t & 0xFFFF);
                                                 try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_ordinal, .name = &[_]u8{}, .ordinal = ord });
                                                 try messages.append(allocator, root.Message{ .body = "import by ordinal (32-bit)" });
                                             } else {
@@ -624,7 +624,7 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
                                             const IMAGE_ORDINAL_FLAG64: u64 = 0x8000000000000000;
                                             if ((t64 & IMAGE_ORDINAL_FLAG64) != 0) {
                                                 // import by ordinal: record ordinal value and diagnostic message
-                                                const ord64 = @intCast(u32, t64 & 0xFFFF);
+                                                const ord64 = @intCast(u32)(t64 & 0xFFFF);
                                                 try dll_symbols.append(allocator, root.ImportSymbol{ .kind = root.ImportSymbolKind.by_ordinal, .name = &[_]u8{}, .ordinal = ord64 });
                                                 try messages.append(allocator, root.Message{ .body = "import by ordinal (64-bit)" });
                                             } else {
@@ -750,9 +750,11 @@ test "slice_decoders: decodeElfSlice parses ELF header from fixture" {
             }
         }
         for (ie.symbols) |sym| {
-            if ((sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) and std.mem.indexOf(u8, sym.name, "printf")) |pos| {
+            if (sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) {
+                if (std.mem.indexOf(u8, sym.name, "printf")) |pos| {
                 _ = pos;
                 found_printf = true;
+                }
             }
         }
     }
@@ -840,17 +842,19 @@ test "slice_decoders.invariants: Mach-O decode populates sections, segments, imp
             }
         }
         for (ie.symbols) |sym| {
-            if ((sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) and std.mem.indexOf(u8, sym.name, "printf")) |pos| {
-                _ = pos;
-                found_printf_or_malloc = true;
-            }
-            if ((sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) and std.mem.indexOf(u8, sym.name, "malloc")) |pos| {
-                _ = pos;
-                found_printf_or_malloc = true;
-            }
-            if ((sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) and std.mem.indexOf(u8, sym.name, "dyld_stub_binder")) |pos| {
-                _ = pos;
-                found_dyld_stub = true;
+            if (sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) {
+                if (std.mem.indexOf(u8, sym.name, "printf")) |pos| {
+                    _ = pos;
+                    found_printf_or_malloc = true;
+                }
+                if (std.mem.indexOf(u8, sym.name, "malloc")) |pos| {
+                    _ = pos;
+                    found_printf_or_malloc = true;
+                }
+                if (std.mem.indexOf(u8, sym.name, "dyld_stub_binder")) |pos| {
+                    _ = pos;
+                    found_dyld_stub = true;
+                }
             }
         }
     }
@@ -960,9 +964,11 @@ test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {
             }
         }
         for (ie.symbols) |sym| {
-            if ((sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) and std.mem.indexOf(u8, sym.name, "printf")) |pos| {
+            if (sym.kind == root.ImportSymbolKind.by_name or sym.kind == root.ImportSymbolKind.by_name_and_ordinal) {
+                if (std.mem.indexOf(u8, sym.name, "printf")) |pos| {
                 _ = pos;
                 found_printf = true;
+                }
             }
         }
     }

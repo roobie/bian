@@ -2240,6 +2240,38 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         }
     }
 
+    // If we have a UUID from LC_UUID, try to locate a companion .dSYM next to the original file path
+    if (dbg_meta.uuid_present and desc_path.len != 0) {
+        // candidate: <path>.dSYM/Contents/Resources/DWARF/<basename(path)>
+        const dsuffix: []const u8 = ".dSYM/Contents/Resources/DWARF/";
+        var base_idx: usize = desc_path.len;
+        while (base_idx > 0) : (base_idx -= 1) {
+            if (desc_path[base_idx - 1] == '/') break;
+        }
+        const basename = desc_path[base_idx .. desc_path.len];
+        const cand_len = desc_path.len + dsuffix.len + basename.len;
+        var cand_buf = try allocator.alloc(u8, cand_len);
+        var ci: usize = 0;
+        var i: usize = 0;
+        while (i < desc_path.len) : (i += 1) cand_buf[ci + i] = desc_path[i];
+        ci += desc_path.len;
+        var si2: usize = 0;
+        while (si2 < dsuffix.len) : (si2 += 1) cand_buf[ci + si2] = dsuffix[si2];
+        ci += dsuffix.len;
+        var bi2: usize = 0;
+        while (bi2 < basename.len) : (bi2 += 1) cand_buf[ci + bi2] = basename[bi2];
+        const cand_slice = cand_buf[0..cand_len];
+        // Check for existence without leaving allocated state; free buffer after check
+        const fs = std.fs.cwd();
+        const f = fs.openFile(cand_slice, .{}) catch null;
+        if (f) |file| {
+            // Found a dSYM companion artifact; prefer dsym as debug_type
+            _ = file.close();
+            dbg_type = root.BinaryDescription.DebugType.dsym;
+        }
+        allocator.free(cand_buf);
+    }
+
     const desc = root.BinaryDescription{
         .format = root.BinaryFileKind.macho,
         .os_abi = root.OsAbi.macos,

@@ -66,10 +66,10 @@ Notes: ELF sets NX/RELRO/PIE hints; PE reads DllCharacteristics to set ASLR/NX h
 - [ ] For ELF: detect .note.gnu.build-id, .debug_* presence, and DWARF sections; optionally read DWARF CU headers to set debug_info_present (TODO)
 - [ ] For Mach-O: detect LC_UUID, DWARF sections, and dSYM companion; report debug_info_present and path/uuid for dSYM link (not implemented)
 - [x] For PE: detect IMAGE_DIRECTORY_ENTRY_DEBUG and set debug_info_present flag (debug directory presence is detected)
-- [ ] For PE: extract CodeView signature / PDB path and GUID/age (PDB path extraction is not implemented in code yet; BinaryDescription contains debug_metadata.pdb.path (legacy debug_pdb_path kept) field but decodePESlice does not currently populate it)
-- [ ] Provide a minimal API in BinaryDescription to hold debug metadata: debug_info_present: bool, debug_type: enum (none,pdb,dwarf,dsym,other), debug_metadata: optional struct { path, guid, age, uuid } (partial: debug_info_present + debug_metadata.pdb.path (legacy debug_pdb_path kept) field exist; structured metadata not implemented)
+- [ ] For PE: extract CodeView signature / PDB path and GUID/age (PDB path extraction is not implemented in code yet; BinaryDescription contains debug_pdb_path field but decodePESlice does not currently populate it)
+- [ ] Provide a minimal API in BinaryDescription to hold debug metadata: debug_info_present: bool, debug_type: enum (none,pdb,dwarf,dsym,other), debug_metadata: optional struct { path, guid, age, uuid } (partial: debug_info_present + debug_pdb_path field exist; structured metadata not implemented)
 
-Notes: BinaryDescription already exposes debug_info_present and debug_metadata.pdb.path (legacy debug_pdb_path kept) fields (the debug_metadata.pdb.path (legacy debug_pdb_path kept) field was added so we can store a discovered PDB path). However, parsing the IMAGE_DEBUG_DIRECTORY entries to extract CodeView/RSDS and GUID/age, plus Mach-O/ELF DWARF/dSYM discovery, are still TODOs. Tests for PDB extraction are also pending.
+Notes: BinaryDescription already exposes debug_info_present and debug_pdb_path fields (the debug_pdb_path field was added so we can store a discovered PDB path). However, parsing the IMAGE_DEBUG_DIRECTORY entries to extract CodeView/RSDS and GUID/age, plus Mach-O/ELF DWARF/dSYM discovery, are still TODOs. Tests for PDB extraction are also pending.
 
 8) Error handling and diagnostics
 - [x] When mapping vaddrs to file offsets fails, append a Message rather than panicking (ELF/PE/Mach-O behavior implemented)
@@ -86,7 +86,7 @@ Notes: Tests cover many malformed/truncated cases and expect decoder to return e
 - [ ] Add cross-format invariant tests: for each fixture, confirm BinaryDescription fields (format, arch, bitness, sections/segments populated, imports/exports presence as expected) (some invariant tests exist; more coverage desired)
 - [ ] Add targeted edge-case tests: oversized counts, malformed sizes (DT_STRSZ-like), missing name tables, dynamic table mapping failures (some exist for ELF; more for PE/Mach-O desired)
 - [ ] Consider adding fuzz tests / libFuzzer harness for each decoder focusing on bounds checks and corrupt headers
-- [x] Fixed unit-test leak for decodePESlice by ensuring desc.debug_metadata.pdb.path (legacy debug_pdb_path kept) is freed and deallocators updated (tests updated where needed)
+- [x] Fixed unit-test leak for decodePESlice by ensuring desc.debug_pdb_path is freed and deallocators updated (tests updated where needed)
 
 Notes: Unit tests in src/slice_decoders.zig exercise many positive and negative cases. Test coverage is good for ELF; PE/Mach-O have solid baseline tests but need more targeted fixtures (PDB, forwarded exports, import-by-ordinal fixtures) and cross-format invariant tests.
 
@@ -110,7 +110,7 @@ Notes: CI integration is planned; current repo has unit tests runnable locally v
 - [ ] Mach-O: parse dyld shared cache references if useful for imports in dyldcache-arm64 scenarios (optional)
 
 13) Debug-info extraction details
-- [x] PDB (PE/codeview): BinaryDescription exposes debug_metadata.pdb.path (legacy debug_pdb_path kept) field so discovered PDB path may be stored (parsing of IMAGE_DEBUG_DIRECTORY/CodeView to populate this is still TODO)
+- [x] PDB (PE/codeview): BinaryDescription exposes debug_pdb_path field so discovered PDB path may be stored (parsing of IMAGE_DEBUG_DIRECTORY/CodeView to populate this is still TODO)
 - [ ] DWARF: for ELF and Mach-O, minimally validate presence of .debug_info and maybe read first CU header to ensure it's parseable (don't need full DWARF parsing initially)
 - [ ] dSYM (Mach-O): detect UUIDs in binary and match to .dSYM bundles (if available in testing assets) and report dSYM path/uuid
 - [ ] Produce debug metadata that caller code can use to lookup debug files (path/uuid/guid/age)
@@ -142,7 +142,7 @@ Phase 2 — Dynamic/edge case parity & messages
 - [ ] Add tests that corrupt tables to ensure decoder appends messages rather than panics
 
 Phase 3 — Debug info detection & basic extraction
-- [ ] PE: implement IMAGE_DEBUG_DIRECTORY / CodeView PDB metadata extraction and focused unit tests (parsing not yet implemented; BinaryDescription supports a debug_metadata.pdb.path (legacy debug_pdb_path kept) field)
+- [ ] PE: implement IMAGE_DEBUG_DIRECTORY / CodeView PDB metadata extraction and focused unit tests (parsing not yet implemented; BinaryDescription supports a debug_pdb_path field)
 - [ ] ELF/Mach-O: detect DWARF presence and minimally validate
 - [ ] Add BinaryDescription.debug_metadata structure and populate it
 
@@ -191,7 +191,7 @@ Estimated effort
 - Fuzz harness + CI integration: 1-3 days
 
 Next steps (if you want me to act)
-- I can start by adding PE fixtures and a focused unit test asserting debug_metadata.pdb.path (legacy debug_pdb_path kept) population and produce a patch/PR; I will create the required chronicle entry as part of the change.
+- I can start by adding PE fixtures and a focused unit test asserting debug_pdb_path population and produce a patch/PR; I will create the required chronicle entry as part of the change.
 - Alternatively, I can draft the concrete test cases and the minimal PDB extraction code changes to src/slice_decoders.zig.
 
 Operational reminders
@@ -231,7 +231,7 @@ D) Tests & fixture
 - [ ] Ensure test calls root.freeBinaryDescription to avoid leaks
 
 E) JSON/pretty-print & docs
-- [ ] Update src/json_output.zig and BinaryDescription.writePretty to emit debug_type and debug_metadata in a stable, backward-compatible way (keep debug_metadata.pdb.path (legacy debug_pdb_path kept) for one release if desired)
+- [ ] Update src/json_output.zig and BinaryDescription.writePretty to emit debug_type and debug_metadata in a stable, backward-compatible way (keep debug_pdb_path for one release if desired)
 - [ ] Update README.md/docs with a short example showing how to read debug metadata from the JSON output
 
 F) Chronicle & CI
@@ -254,7 +254,7 @@ Files likely touched by this plan
 - chronicles/* (chronicle entries for the change)
 
 Use tools/agh_search_replace.py for bulk doc updates
-- [ ] After finalizing field names (debug_type/debug_metadata), run tools/agh_search_replace.py to update docs and checklists consistently (e.g., replace debug_metadata.pdb.path (legacy debug_pdb_path kept) mentions with debug_metadata.pdb.path where appropriate)
+- [ ] After finalizing field names (debug_type/debug_metadata), run tools/agh_search_replace.py to update docs and checklists consistently (e.g., replace debug_pdb_path mentions with debug_metadata.pdb.path where appropriate)
 
 Estimated incremental effort for this plan
 - API changes + deallocator updates + writer/pretty-print: 1-2 hours

@@ -311,6 +311,24 @@ pub const PrettyPrintOptionsDefault = PrettyPrintOptions{ .print_symbols = false
 
 /// Unified description structure (canonical type used across the codebase)
 pub const BinaryDescription = struct {
+    // Structured debug metadata: prefer this over the legacy debug_pdb_path
+    // for new callers. Keep it compact: presence flags for optional fields.
+    pub const DebugType = enum { none, pdb, dwarf, dsym, other };
+
+    pub const DebugPdb = struct {
+        path: []const u8,
+        guid: [16]u8,
+        guid_present: bool,
+        age: u32,
+        age_present: bool,
+    };
+
+    pub const DebugMetadata = struct {
+        pdb: DebugPdb,
+        uuid: [16]u8,
+        uuid_present: bool,
+    };
+
     // === BASICS ===
     format: BinaryFileKind,
     os_abi: OsAbi,
@@ -340,9 +358,12 @@ pub const BinaryDescription = struct {
     path: []const u8,
 
     debug_info_present: bool,
-    // For PE/PDB and other debug containers we may include a minimal path
-    // extracted from the binary's debug directory (e.g. CodeView RSDS -> PDB path).
+    // Backwards-compatible PDB path (may alias debug_metadata.pdb.path); do not
+    // treat this as the primary storage for structured debug metadata.
     debug_pdb_path: []const u8,
+
+    debug_type: DebugType,
+    debug_metadata: DebugMetadata,
 
     pub fn writePretty(self: *const BinaryDescription, w: *std.io.Writer, opts: PrettyPrintOptions) !void {
         // If path supplied, print it first
@@ -479,8 +500,42 @@ pub const BinaryDescription = struct {
         }
 
         try w.print("debug_info_present: {s}\n", .{if (self.debug_info_present) "yes" else "no"});
+
+        const dbg_type_str = switch (self.debug_type) {
+            BinaryDescription.DebugType.none => "none",
+            BinaryDescription.DebugType.pdb => "pdb",
+            BinaryDescription.DebugType.dwarf => "dwarf",
+            BinaryDescription.DebugType.dsym => "dsym",
+            else => "other",
+        };
+        try w.print("debug_type: {s}\n", .{dbg_type_str});
+
+        // Legacy compatibility: print debug_pdb_path if set
         if (self.debug_pdb_path.len != 0) {
             try w.print("debug_pdb_path: {s}\n", .{self.debug_pdb_path});
+        }
+
+        // Structured metadata
+        if (self.debug_metadata.pdb.path.len != 0) {
+            try w.print("debug.metadata.pdb.path: {s}\n", .{self.debug_metadata.pdb.path});
+            if (self.debug_metadata.pdb.guid_present) {
+                // print GUID as hex string
+                var j: usize = 0;
+                var hexbuf: [32]u8 = undefined;
+                var hi: usize = 0;
+                while (j < 16) : (j += 1) {
+                    const b: u8 = self.debug_metadata.pdb.guid[j];
+                    const hn: u8 = @as(u8, (b >> 4) & 0xF);
+                    const ln: u8 = @as(u8, b & 0xF);
+                    hexbuf[hi] = if (hn < 10) @as(u8, '0') + hn else @as(u8, 'a') + @as(u8, hn - 10);
+                    hexbuf[hi + 1] = if (ln < 10) @as(u8, '0') + ln else @as(u8, 'a') + @as(u8, ln - 10);
+                    hi += 2;
+                }
+                try w.print("debug.metadata.pdb.guid: {s}\n", .{hexbuf[0..hi]});
+            }
+            if (self.debug_metadata.pdb.age_present) {
+                try w.print("debug.metadata.pdb.age: {d}\n", .{self.debug_metadata.pdb.age});
+            }
         }
     }
 };
@@ -718,6 +773,39 @@ pub fn jsonStringify(self: *@This(), jw: anytype) !void {
     try jw.objectField("debug_pdb_path");
     if (self.debug_pdb_path.len == 0) try jw.write(null) else try jw.write(self.debug_pdb_path);
 
+    try jw.objectField("debug_type");
+    const dbg_type_str = switch (self.debug_type) {
+        BinaryDescription.DebugType.none => "none",
+        BinaryDescription.DebugType.pdb => "pdb",
+        BinaryDescription.DebugType.dwarf => "dwarf",
+        BinaryDescription.DebugType.dsym => "dsym",
+        else => "other",
+    };
+    try jw.write(dbg_type_str);
+
+    try jw.objectField("debug_metadata");
+    try jw.beginObject();
+    try jw.objectField("pdb");
+    try jw.beginObject();
+    try jw.objectField("path");
+    if (self.debug_metadata.pdb.path.len == 0) try jw.write(null) else try jw.write(self.debug_metadata.pdb.path);
+    try jw.objectField("guid");
+    if (self.debug_metadata.pdb.guid_present) {
+        // emit hex string of 16 bytes
+        try jw.beginWriteRaw();
+        try jw.writer.print("\"", .{});
+        var gi: usize = 0;
+        while (gi < 16) : (gi += 1) try jw.writer.print("{02x}", .{self.debug_metadata.pdb.guid[gi]});
+        try jw.writer.print("\"", .{});
+        jw.endWriteRaw();
+    } else {
+        try jw.write(null);
+    }
+    try jw.objectField("age");
+    if (self.debug_metadata.pdb.age_present) try jw.write(self.debug_metadata.pdb.age) else try jw.write(null);
+    try jw.endObject(); // end pdb
+    try jw.endObject(); // end debug_metadata
+
     try jw.objectField("metadata");
     try jw.beginObject();
     try jw.objectField("duration_ms");
@@ -750,8 +838,10 @@ pub const BinaryBundle = struct {
             if (d.messages.len != 0) allocator.free(d.messages);
             // Free per-description path if present
             if (d.path.len != 0) allocator.free(d.path);
-            // Free per-description PDB path if present (allocated by decodePESlice)
-            if (d.debug_pdb_path.len != 0) allocator.free(d.debug_pdb_path);
+            // Free structured debug metadata (pdb.path) if present
+            if (d.debug_metadata.pdb.path.len != 0) allocator.free(d.debug_metadata.pdb.path);
+            // Note: leave d.debug_pdb_path alone (it may alias the structured path for
+            // backward compatibility and is not separately freed).
         }
         // Free the items slice itself
         if (self.items.len != 0) allocator.free(self.items);

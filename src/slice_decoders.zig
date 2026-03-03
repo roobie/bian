@@ -395,6 +395,8 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         .path = desc_path,
         .debug_pdb_path = &[_]u8{},
         .debug_info_present = false,
+        .debug_type = root.BinaryDescription.DebugType.none,
+        .debug_metadata = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false },
     };
 
     return desc;
@@ -664,7 +666,67 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
             }
         }
 
-        // Assign debug flag
+        // Prepare structured debug metadata (defaults)
+        var dbg_type = root.BinaryDescription.DebugType.none;
+        var dbg_meta = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false };
+
+        if (debug_present) {
+            // Try to map the debug directory RVA to a file offset
+            if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, debug_rva))) |debug_off| {
+                const entry_size = 28; // IMAGE_DEBUG_DIRECTORY size
+                const max_entries = @as(usize, debug_sz) / entry_size;
+                var ei: usize = 0;
+                while (ei < max_entries) : (ei += 1) {
+                    const entry_off = debug_off + ei * entry_size;
+                    if (entry_off + entry_size > buf.len) break;
+                    const typ = root.readU32At(buf, entry_off + 12, .little);
+                    const addr_of_raw = root.readU32At(buf, entry_off + 20, .little); // RVA
+                    const ptr_to_raw = root.readU32At(buf, entry_off + 24, .little); // file pointer
+
+                    var raw_off: ?usize = null;
+                    if (ptr_to_raw != 0) {
+                        const maybe_ptr = u64_to_usize_checked(@as(u64, ptr_to_raw));
+                        if (maybe_ptr) |mp| raw_off = mp;
+                    }
+                    if (raw_off == null and addr_of_raw != 0) {
+                        if (root.vaddrToFileOffset(buf.len, segmaps.items, @as(u64, addr_of_raw))) |ro| raw_off = ro;
+                    }
+                    if (raw_off == null) continue;
+
+                    if (typ == 2) { // IMAGE_DEBUG_TYPE_CODEVIEW
+                        const roff = raw_off.?;
+                        if (roff + 4 > buf.len) continue;
+                        const sig = buf[roff .. roff + 4];
+                        if (std.mem.eql(u8, sig, "RSDS")) {
+                            // RSDS: 4-byte sig + 16-byte GUID + 4-byte age + NUL-terminated path
+                            if (roff + 24 > buf.len) continue;
+                            var g_i: usize = 0;
+                            while (g_i < 16) : (g_i += 1) dbg_meta.pdb.guid[g_i] = buf[roff + 4 + g_i];
+                            dbg_meta.pdb.guid_present = true;
+                            dbg_meta.pdb.age = root.readU32At(buf, roff + 20, .little);
+                            dbg_meta.pdb.age_present = true;
+                            const path_start = roff + 24;
+                            if (path_start < buf.len) {
+                                const p = std.mem.sliceTo(buf[path_start..], 0);
+                                if (p.len != 0) {
+                                    // Allocate owned copy
+                                    var pbuf = try allocator.alloc(u8, p.len);
+                                    var pi: usize = 0;
+                                    while (pi < p.len) : (pi += 1) pbuf[pi] = p[pi];
+                                    dbg_meta.pdb.path = pbuf[0..p.len];
+                                    dbg_type = root.BinaryDescription.DebugType.pdb;
+                                    // For backward compatibility, set debug_pdb_path to point at the same slice
+                                    // (the actual ownership is dbg_meta.pdb.path and free routines free that)
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Assign debug flag and structured metadata
         const desc = root.BinaryDescription{
             .format = root.BinaryFileKind.pe,
             .os_abi = root.OsAbi.windows,
@@ -684,8 +746,10 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
             .exports = try exports.toOwnedSlice(allocator),
             .messages = try messages.toOwnedSlice(allocator),
             .path = desc_path,
-            .debug_pdb_path = &[_]u8{},
+            .debug_pdb_path = dbg_meta.pdb.path,
             .debug_info_present = debug_present,
+            .debug_type = dbg_type,
+            .debug_metadata = dbg_meta,
         };
 
         return desc;
@@ -713,6 +777,8 @@ pub fn decodePESlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]con
         .path = desc_path,
         .debug_pdb_path = &[_]u8{},
         .debug_info_present = false,
+        .debug_type = root.BinaryDescription.DebugType.none,
+        .debug_metadata = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false },
     };
 
     return desc2;
@@ -1118,6 +1184,28 @@ test "slice_decoders: decodePESlice parses PE fixture and populates segments" {
     try expect(desc.format == root.BinaryFileKind.pe);
     try expect(desc.segments.len > 0);
     try expect(desc.sections.len > 0);
+}
+
+test "slice_decoders: decodePESlice parses CodeView RSDS from fixture" {
+    const allocator = std.testing.allocator;
+    var file = try std.fs.cwd().openFile("testing/assets/pe-pdb-codeview.exe", .{});
+    defer file.close();
+    const buf = try file.readToEndAlloc(allocator, 16777216);
+    defer allocator.free(buf);
+
+    const desc = try decodePESlice(allocator, buf, null);
+    // Free all per-description allocations
+    defer root.freeBinaryDescription(allocator, desc);
+
+    try expect(desc.debug_info_present == true);
+    try expect(desc.debug_type == root.BinaryDescription.DebugType.pdb);
+    const expected_path = "C:\\test\\fixture.pdb";
+    try expect(std.mem.eql(u8, desc.debug_metadata.pdb.path, expected_path));
+    try expect(desc.debug_metadata.pdb.guid_present == true);
+    try expect(desc.debug_metadata.pdb.age_present == true);
+    const expected_guid: [16]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    var gi: usize = 0;
+    while (gi < 16) : (gi += 1) try expect(desc.debug_metadata.pdb.guid[gi] == expected_guid[gi]);
 }
 
 test "slice_decoders: decodeMachoSlice errors on oversized sizeofcmds" {
@@ -1752,6 +1840,8 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         .path = desc_path,
         .debug_pdb_path = &[_]u8{},
         .debug_info_present = false,
+        .debug_type = root.BinaryDescription.DebugType.none,
+        .debug_metadata = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false },
     };
 
     return desc;

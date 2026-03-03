@@ -211,6 +211,41 @@ pub fn writeBinaryDescriptionJson(w: *std.io.Writer, bd: *const common.BinaryDes
     try s.objectField("debug_info_present");
     try s.write(bd.debug_info_present);
 
+    try s.objectField("debug_pdb_path");
+    if (bd.debug_pdb_path.len == 0) try s.write(null) else try s.write(bd.debug_pdb_path);
+
+    try s.objectField("debug_type");
+    const dbg_type_str = switch (bd.debug_type) {
+        common.BinaryDescription.DebugType.none => "none",
+        common.BinaryDescription.DebugType.pdb => "pdb",
+        common.BinaryDescription.DebugType.dwarf => "dwarf",
+        common.BinaryDescription.DebugType.dsym => "dsym",
+        else => "other",
+    };
+    try s.write(dbg_type_str);
+
+    try s.objectField("debug_metadata");
+    try s.beginObject();
+    try s.objectField("pdb");
+    try s.beginObject();
+    try s.objectField("path");
+    if (bd.debug_metadata.pdb.path.len == 0) try s.write(null) else try s.write(bd.debug_metadata.pdb.path);
+    try s.objectField("guid");
+    if (bd.debug_metadata.pdb.guid_present) {
+        try s.beginWriteRaw();
+        try s.writer.print("\"", .{});
+        var gi: usize = 0;
+        while (gi < 16) : (gi += 1) try s.writer.print("{02x}", .{bd.debug_metadata.pdb.guid[gi]});
+        try s.writer.print("\"", .{});
+        s.endWriteRaw();
+    } else {
+        try s.write(null);
+    }
+    try s.objectField("age");
+    if (bd.debug_metadata.pdb.age_present) try s.write(bd.debug_metadata.pdb.age) else try s.write(null);
+    try s.endObject();
+    try s.endObject();
+
     try s.objectField("metadata");
     try s.beginObject();
     try s.objectField("duration_ms");

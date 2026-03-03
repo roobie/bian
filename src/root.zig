@@ -604,6 +604,8 @@ fn decodeElf(allocator: std.mem.Allocator, file: std.fs.File, path: ?[]const u8)
         .path = desc_path,
         .debug_info_present = false,
         .debug_pdb_path = &[_]u8{},
+        .debug_type = BinaryDescription.DebugType.none,
+        .debug_metadata = BinaryDescription.DebugMetadata{ .pdb = BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false },
     };
 
     // Construct a bundle that owns the single description and the backing buffer
@@ -635,8 +637,9 @@ pub fn freeBinaryDescription(allocator: std.mem.Allocator, desc: BinaryDescripti
     if (desc.messages.len != 0) allocator.free(desc.messages);
     // Free path if allocated
     if (desc.path.len != 0) allocator.free(desc.path);
-    // Free PDB path if allocated
-    if (desc.debug_pdb_path.len != 0) allocator.free(desc.debug_pdb_path);
+    // Free structured debug metadata if present
+    if (desc.debug_metadata.pdb.path.len != 0) allocator.free(desc.debug_metadata.pdb.path);
+    // Note: desc.debug_pdb_path may alias the structured path for compatibility and is not freed separately.
 }
 
 /// Decodes a PE file into a BinaryBundle (single-slice). Uses slice_dec.decodePESlice

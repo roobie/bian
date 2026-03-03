@@ -7,3 +7,6 @@ run = "zig fmt src"
 [tasks.test]
 depends = ["fmt"]
 run = "zig build test"
+
+[tasks.qa]
+depends = ["test"]

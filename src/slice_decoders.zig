@@ -374,6 +374,41 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         desc_path = pbuf[0..p.len];
     }
 
+    // Minimal DWARF detection: look for .debug_info or .note.gnu.build-id in the section list
+    var dbg_type = root.BinaryDescription.DebugType.none;
+    var dbg_meta = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, .uuid_present = false };
+    var dwarf_present: bool = false;
+    var si: usize = 0;
+    while (si < sections.items.len) : (si += 1) {
+        const s = sections.items[si];
+        if (std.mem.eql(u8, s.name, ".debug_info") or std.mem.eql(u8, s.name, ".zdebug_info") or std.mem.indexOf(u8, s.name, ".debug_") != null) {
+            dwarf_present = true;
+            dbg_type = root.BinaryDescription.DebugType.dwarf;
+            break;
+        }
+        if (std.mem.eql(u8, s.name, ".note.gnu.build-id")) {
+            // try to parse ELF note header to extract build-id (desc) up to 16 bytes
+            const off = @as(usize, s.file_offset);
+            const sz = @as(usize, s.size);
+            if (off + 12 <= file_buf.len and sz >= 12) {
+                const namesz = root.readU32At(file_buf, off + 0, header.endian);
+                const descsz = root.readU32At(file_buf, off + 4, header.endian);
+                const note_name_off = off + 12;
+                const pad = (@as(usize, namesz) + 3) & (~@as(usize, 3));
+                const note_desc_off = note_name_off + pad;
+                if (note_desc_off + @as(usize, descsz) <= file_buf.len) {
+                    const want = if (descsz >= 16) 16 else @as(usize, descsz);
+                    var j2: usize = 0;
+                    while (j2 < want) : (j2 += 1) dbg_meta.uuid[j2] = file_buf[note_desc_off + j2];
+                    dbg_meta.uuid_present = true;
+                    dwarf_present = true;
+                    dbg_type = root.BinaryDescription.DebugType.dwarf;
+                    break;
+                }
+            }
+        }
+    }
+
     const desc = root.BinaryDescription{
         .format = root.BinaryFileKind.elf,
         .os_abi = root.OsAbi.unknown,
@@ -394,9 +429,9 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
         .messages = try messages.toOwnedSlice(allocator),
         .path = desc_path,
         .debug_pdb_path = &[_]u8{},
-        .debug_info_present = false,
-        .debug_type = root.BinaryDescription.DebugType.none,
-        .debug_metadata = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false },
+        .debug_info_present = dwarf_present,
+        .debug_type = dbg_type,
+        .debug_metadata = dbg_meta,
     };
 
     return desc;

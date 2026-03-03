@@ -27,6 +27,36 @@ fn u64_to_usize_checked(v: u64) ?usize {
     return @as(usize, v);
 }
 
+// Read a 16-bit unsigned integer at offset with endian awareness.
+fn readU16At(buf: []const u8, off: usize, endian: Endian) u16 {
+    if (endian == .little) return root.readU16LE(buf, off);
+    // big-endian: high byte first
+    return (@as(u16, buf[off]) << 8) | @as(u16, buf[off + 1]);
+}
+
+// Minimal DWARF unit header sanity check. We do not fully parse DWARF
+// here; just validate that the .debug_info section begins with a plausible
+// compilation-unit header (DWARF32 or DWARF64) and a reasonable version.
+fn dwarfUnitHeaderLooksValid(buf: []const u8, off: usize, sz: usize, endian: Endian) bool {
+    // Need at least the minimal DWARF32 header: unit_length(4) + version(2) + abbrev_offset(4) + addr_size(1) = 11
+    if (sz < 11) return false;
+    if (off + 4 > buf.len) return false;
+    const unit_len32 = root.readU32At(buf, off, endian);
+    if (unit_len32 == 0xFFFFFFFF) {
+        // DWARF64 header: 4 (0xFFFFFFFF) + 8 (unit_length) + 2 (version) + 8 (abbrev_offset) + 1 (addr_size) = 23
+        if (sz < 23) return false;
+        if (off + 12 > buf.len) return false; // need to read version at off+12..13
+        const version = readU16At(buf, off + 12, endian);
+        // Accept DWARF versions 2..6 as plausible
+        return (version >= 2 and version <= 6);
+    } else {
+        // DWARF32
+        if (off + 6 > buf.len) return false; // need version at off+4..5
+        const version = readU16At(buf, off + 4, endian);
+        return (version >= 2 and version <= 6);
+    }
+}
+
 pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: ?[]const u8) !root.BinaryDescription {
     if (file_buf.len < 16) return ParseError.TooSmall;
     var fixed_reader = std.io.Reader.fixed(file_buf);
@@ -376,15 +406,24 @@ pub fn decodeElfSlice(allocator: std.mem.Allocator, file_buf: []const u8, path: 
 
     // Minimal DWARF detection: look for .debug_info or .note.gnu.build-id in the section list
     var dbg_type = root.BinaryDescription.DebugType.none;
-    var dbg_meta = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, .uuid_present = false };
+    var dbg_meta = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false };
     var dwarf_present: bool = false;
     var si: usize = 0;
     while (si < sections.items.len) : (si += 1) {
         const s = sections.items[si];
         if (std.mem.eql(u8, s.name, ".debug_info") or std.mem.eql(u8, s.name, ".zdebug_info") or std.mem.indexOf(u8, s.name, ".debug_") != null) {
-            dwarf_present = true;
-            dbg_type = root.BinaryDescription.DebugType.dwarf;
-            break;
+            const off = @as(usize, s.file_offset);
+            const sz = @as(usize, s.size);
+            if (off + 1 <= file_buf.len and sz != 0 and off + sz <= file_buf.len) {
+                if (dwarfUnitHeaderLooksValid(file_buf, off, sz, header.endian)) {
+                    dwarf_present = true;
+                    dbg_type = root.BinaryDescription.DebugType.dwarf;
+                    break;
+                } else {
+                    // Found debug section by name but header check failed — record a message
+                    try messages.append(allocator, root.Message{ .body = "found .debug_info section but DWARF CU header invalid" });
+                }
+            }
         }
         if (std.mem.eql(u8, s.name, ".note.gnu.build-id")) {
             // try to parse ELF note header to extract build-id (desc) up to 16 bytes
@@ -1006,6 +1045,48 @@ fn write_u32_be(buf: []u8, off: usize, v: u32) void {
         buf[off + (3 - j)] = @intCast(tmp & @as(u32, 0xFF));
         tmp = tmp >> 8;
     }
+}
+
+// Tests for DWARF header sanity check helper
+test "dwarf.header: valid DWARF32 little-endian" {
+    var buf: [32]u8 = undefined;
+    var i: usize = 0;
+    while (i < buf.len) : (i += 1) buf[i] = 0;
+    // unit_length = 100 (little-endian)
+    write_u32_le(buf[0..], 0, 100);
+    // version = 4 (little-endian)
+    buf[4] = 4;
+    buf[5] = 0;
+    // abbrev_offset = 0
+    write_u32_le(buf[0..], 6, 0);
+    // addr_size
+    buf[10] = 8;
+    try expect(dwarfUnitHeaderLooksValid(buf[0..], 0, 11, .little));
+}
+
+test "dwarf.header: valid DWARF64 little-endian" {
+    var buf: [64]u8 = undefined;
+    var i: usize = 0;
+    while (i < buf.len) : (i += 1) buf[i] = 0;
+    // unit_length = 0xFFFFFFFF marker
+    write_u32_le(buf[0..], 0, 0xFFFFFFFF);
+    // 64-bit unit length at off 4
+    write_u64_le(buf[0..], 4, 200);
+    // version at off 12
+    buf[12] = 4;
+    buf[13] = 0;
+    // abbrev_offset (8 bytes) at off 14 (zero)
+    write_u64_le(buf[0..], 14, 0);
+    // addr_size at 22
+    buf[22] = 8;
+    try expect(dwarfUnitHeaderLooksValid(buf[0..], 0, 23, .little));
+}
+
+test "dwarf.header: invalid small buffer" {
+    var buf: [8]u8 = undefined;
+    var i: usize = 0;
+    while (i < buf.len) : (i += 1) buf[i] = 0;
+    try expect(!dwarfUnitHeaderLooksValid(buf[0..], 0, buf.len, .little));
 }
 
 test "slice_decoders: fallback when DT_STRTAB vaddr doesn't map (use .dynstr)" {

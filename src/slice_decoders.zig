@@ -1953,6 +1953,26 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         desc_path = pbuf[0..p.len];
     }
 
+    // Minimal DWARF detection for Mach-O: look for __DWARF sections like __debug_info
+    var dwarf_present: bool = false;
+    var sidx2: usize = 0;
+    while (sidx2 < sections_list.items.len) : (sidx2 += 1) {
+        const s = sections_list.items[sidx2];
+        if (std.mem.eql(u8, s.name, "__debug_info") or std.mem.eql(u8, s.name, "__zdebug_info") or std.mem.indexOf(u8, s.name, "__debug_") != null) {
+            const off = @as(usize, s.file_offset);
+            const sz = @as(usize, s.size);
+            if (off + 1 <= buf.len and sz != 0 and off + sz <= buf.len) {
+                if (dwarfUnitHeaderLooksValid(buf, off, sz, m_endian)) {
+                    dwarf_present = true;
+                    if (dbg_type == root.BinaryDescription.DebugType.none) dbg_type = root.BinaryDescription.DebugType.dwarf;
+                    break;
+                } else {
+                    try messages.append(allocator, root.Message{ .body = "found .debug_info section but DWARF CU header invalid" });
+                }
+            }
+        }
+    }
+
     const desc = root.BinaryDescription{
         .format = root.BinaryFileKind.macho,
         .os_abi = root.OsAbi.macos,

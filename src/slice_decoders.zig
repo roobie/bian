@@ -2248,7 +2248,7 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         while (base_idx > 0) : (base_idx -= 1) {
             if (desc_path[base_idx - 1] == '/') break;
         }
-        const basename = desc_path[base_idx .. desc_path.len];
+        const basename = desc_path[base_idx..desc_path.len];
         const cand_len = desc_path.len + dsuffix.len + basename.len;
         var cand_buf = try allocator.alloc(u8, cand_len);
         var ci: usize = 0;

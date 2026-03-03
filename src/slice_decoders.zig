@@ -1661,6 +1661,10 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
     var iundefsym: usize = 0;
     var nundefsym: usize = 0;
 
+    // Debug metadata placeholders for Mach-O
+    var dbg_type = root.BinaryDescription.DebugType.none;
+    var dbg_meta = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false };
+
     // Little-endian parsing using std.macho helpers where possible
     if (m_endian == .little) {
         var lc_it: macho.LoadCommandIterator = .{ .ncmds = ncmds, .buffer = lc_buffer, .index = 0 };
@@ -1734,6 +1738,12 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                     if (rp.len != 0) try messages.append(allocator, root.Message{ .body = rp });
                 } else if (cmd == macho.LC.CODE_SIGNATURE) {
                     try messages.append(allocator, root.Message{ .body = "code signature present" });
+                } else if (cmd == macho.LC.UUID) {
+                    const uc = lc.cast(macho.uuid_command) orelse continue;
+                    var ui: usize = 0;
+                    while (ui < 16) : (ui += 1) dbg_meta.uuid[ui] = uc.uuid[ui];
+                    dbg_meta.uuid_present = true;
+                    dbg_type = root.BinaryDescription.DebugType.dsym;
                 } else if (cmd == macho.LC.DYLD_EXPORTS_TRIE or cmd == macho.LC.DYLD_INFO) {
                     try messages.append(allocator, root.Message{ .body = "dyld export/bind info present (not parsed)" });
                 }
@@ -1816,6 +1826,14 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
                         try messages.append(allocator, root.Message{ .body = "code signature present" });
                     } else if (cmd == macho.LC.DYLD_EXPORTS_TRIE or cmd == macho.LC.DYLD_INFO) {
                         try messages.append(allocator, root.Message{ .body = "dyld export/bind info present (not parsed)" });
+                    } else if (cmd == macho.LC.UUID) {
+                        // big-endian path: uuid is at offset 8
+                        if (lc_data.len >= 8 + 16) {
+                            var ui: usize = 0;
+                            while (ui < 16) : (ui += 1) dbg_meta.uuid[ui] = lc_data[8 + ui];
+                            dbg_meta.uuid_present = true;
+                            dbg_type = root.BinaryDescription.DebugType.dsym;
+                        }
                     }
                 }
             } else {
@@ -1955,9 +1973,9 @@ pub fn decodeMachoSlice(allocator: std.mem.Allocator, buf: []const u8, path: ?[]
         .messages = try messages.toOwnedSlice(allocator),
         .path = desc_path,
         .debug_pdb_path = &[_]u8{},
-        .debug_info_present = false,
-        .debug_type = root.BinaryDescription.DebugType.none,
-        .debug_metadata = root.BinaryDescription.DebugMetadata{ .pdb = root.BinaryDescription.DebugPdb{ .path = &[_]u8{}, .guid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .guid_present = false, .age = 0, .age_present = false }, .uuid = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .uuid_present = false },
+        .debug_info_present = (dbg_type != root.BinaryDescription.DebugType.none),
+        .debug_type = dbg_type,
+        .debug_metadata = dbg_meta,
     };
 
     return desc;
